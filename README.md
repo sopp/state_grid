@@ -1,5 +1,9 @@
 # 国家电网 Home Assistant 集成
 
+> **本仓库是 [tiejiang29/state_grid](https://github.com/tiejiang29/state_grid) 的 fork**，版本跟随上游（当前 `0.9.5`）。
+> 与上游的差异只有一处：新增 **HA 能源面板可直接引用的电网日用电外部统计**（见下方「本 fork 的差异」）。
+> 除此之外的代码、文档、已知限制均与上游一致。
+
 [![GitHub release](https://img.shields.io/github/v/release/tiejiang29/state_grid.svg)](https://github.com/tiejiang29/state_grid/releases)
 
 读取 95598（国家电网）账户的余额、日/月/年用电量与分时拆分。**登录和取数都走国网 App 的接口：没有验证码，不需要大模型，也不需要浏览器。**
@@ -70,6 +74,36 @@ App 通道（app_api.py） ──按刷新间隔（默认 12 小时）──▶ 
 ## 日志里能看到什么
 
 集成只往 HA 日志写有用的东西：App 通道每轮入库多少份、命中/未命中哪一格（未命中会带上原因和当时缓存里还剩的键）、中断时的完整回溯。凭证、令牌、密码一律只打长度。
+
+## 本 fork 的差异
+
+上游只把日用电暴露成传感器属性（`recent_30_daily_ele_list`），要接进 HA 能源面板得自己写模板或用 `integration`/`utility_meter` 拼，且历史数据容易断。本 fork 直接把它作为**外部统计（external statistics）**写进 recorder，能源面板里可以直接选到。
+
+- **每个户号一条统计**，`statistic_id` 为 `state_grid:energy_<户号>`，名字是「国家电网 <用电地址> 日用电」，单位 kWh。
+- **`sum` 是累计值**（游标法链式累加，截至当日结束），不是当日电量——能源面板按 `sum[n] - sum[n-1]` 反推每日用量，这是它要的语义。
+- **数据源**是 `recent_30_daily_ele_list`（滚动 30 天窗口）。导入挂在 coordinator 每次刷新之后，**幂等**：没有新日期就是空操作，**不增加任何 API 调用**。
+- **每个日期只导入一次**，已导入的历史不回头修正。历史数据写错了用下面的 reset 服务重建。
+- 导入前会做一致性校验：图表里最新一天的日期/电量必须与 `daily_lasted_date` / `daily_ele_num` 对得上，对不上就跳过并打 warning，避免数据错位时把脏数据写进长期统计。
+- 游标存在 HA store 的 `state_grid.energy_cursor`。若游标丢了但统计已有数据，会从 recorder 最后一行恢复，不会按基准 0 重写导致历史跳变。
+- 统计元数据会按 HA 版本自适应：HA 2025.10+ 用 `mean_type` + `unit_class`，更早的版本用 `has_mean`。
+
+### 重置服务
+
+```yaml
+# 全部户号：删除已导入的外部统计并清空游标，下次刷新按基准 0 全量重导入
+service: state_grid.reset_energy_statistics
+
+# 单个户号
+service: state_grid.reset_energy_statistics
+data:
+  cons_no: "1234567890"
+```
+
+仅当统计删除成功后才重置游标（删除失败就保持原样并报错），否则会出现「游标归零但旧统计还在」导致的历史跳变。
+
+### 能源面板怎么接
+
+**设置 → 仪表盘 → 能源 → 电网 → 添加用电数据**，选「国家电网 <地址> 日用电」。统计是外部统计，不在实体列表里，要在统计选择器里按名字找。
 
 ## 致谢
 

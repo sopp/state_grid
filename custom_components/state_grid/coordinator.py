@@ -6,6 +6,7 @@ from . import app_supply
 from .data_client import StateGridDataClient
 from .const import DOMAIN
 from .utils.logger import LOGGER
+from . import energy_stats
 
 
 class StateGridCoordinator(DataUpdateCoordinator):
@@ -38,4 +39,9 @@ class StateGridCoordinator(DataUpdateCoordinator):
         push_pending = bool(getattr(self.data_client, "push_pending", False))
         force_refresh = not has_cached_data or push_pending
         await self.data_client.refresh_data(force_refresh=force_refresh)
-        return self.data_client.get_door_account()
+        data = self.data_client.get_door_account()
+        # 能源面板外部统计导入（幂等：无新日期则为空操作，不增加 API 调用）
+        await energy_stats.async_import_energy_statistics(
+            self.hass, self.data_client.get_door_account_list(), data
+        )
+        return data
