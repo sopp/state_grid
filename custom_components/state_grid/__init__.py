@@ -6,6 +6,7 @@ from .utils.logger import LOGGER
 from .utils.store import async_load_from_store
 from .data_client import StateGridDataClient
 from . import click_captcha_solver
+from . import energy_stats
 from .config_flow import StateGridOnnxConfigFlow
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
@@ -46,6 +47,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN] = data_client
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # 能源统计重置服务（单实例集成，重复注册时内部跳过）
+    await energy_stats.async_register_reset_service(hass)
     return True
 
 
@@ -54,6 +57,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data.pop(DOMAIN, None)
+        if hass.services.has_service(DOMAIN, energy_stats.SERVICE_RESET):
+            hass.services.async_remove(DOMAIN, energy_stats.SERVICE_RESET)
     return unload_ok
 
 

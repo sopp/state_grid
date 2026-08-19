@@ -5,6 +5,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .data_client import StateGridDataClient
 from .const import DOMAIN
 from .utils.logger import LOGGER
+from . import energy_stats
 
 
 class StateGridCoordinator(DataUpdateCoordinator):
@@ -25,4 +26,9 @@ class StateGridCoordinator(DataUpdateCoordinator):
         has_cached_data = bool(self.data_client.powerUserList)
         force_refresh = not has_cached_data
         await self.data_client.refresh_data(force_refresh=force_refresh)
-        return self.data_client.get_door_account()
+        data = self.data_client.get_door_account()
+        # 能源面板外部统计导入（幂等：无新日期则为空操作，不增加 API 调用）
+        await energy_stats.async_import_energy_statistics(
+            self.hass, self.data_client.get_door_account_list(), data
+        )
+        return data

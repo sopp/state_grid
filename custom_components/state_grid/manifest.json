@@ -2,6 +2,7 @@
   "domain": "state_grid",
   "name": "国家电网",
   "version": "0.7.14",
+  "homeassistant": "2024.6.0",
   "documentation": "https://github.com/tiejiang29/state_grid",
   "requirements": [
     "openai>=1.0.0",
