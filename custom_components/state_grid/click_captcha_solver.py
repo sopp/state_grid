@@ -174,8 +174,10 @@ def _find_all_icons(
     content = []
     labels = ["A", "B", "C"]
     for i, uri in enumerate(icon_uris[:3]):
-        content.append({"type": "image_url", "image_url": {"url": uri}})
+        # 标签必须在图片之前：标签跟在图后面时，模型会把第 2、3 个图标的归属互换
+        # （同一批 7 张样本实测 3/7 → 6/7）。
         content.append({"type": "text", "text": f"参考图标{labels[i]}"})
+        content.append({"type": "image_url", "image_url": {"url": uri}})
 
     content.append({"type": "image_url", "image_url": {"url": main_uri}})
     content.append({"type": "text", "text": prompt})
@@ -193,6 +195,9 @@ def _find_all_icons(
             ],
             max_tokens=4096,
             response_format={"type": "json_object"},
+            # 点选题是纯定位任务，思考只会拖时间：实测同一张图 182s/11139 token → 3.1s/41 token，
+            # 坐标几乎一致。腾讯验证码有时效，开着思考必然答题超时。
+            extra_body={"thinking": {"type": "disabled"}},
         )
         output = response.choices[0].message.content or ""
         logger.info(f"点选验证码 LLM 响应: {output[:400]}")
@@ -288,6 +293,7 @@ def solve_slider_captcha_llm(
                 }
             ],
             max_tokens=50,
+            extra_body={"thinking": {"type": "disabled"}},   # 同点选题：思考只拖时间
         )
 
         output = response.choices[0].message.content or ""

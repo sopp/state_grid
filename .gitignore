@@ -5,3 +5,17 @@ __pycache__/
 *.swp
 *.swo
 *~
+_scratch/
+sidecar/chrome-profile/
+sidecar/cp-h2/
+chrome-profile/
+sidecar/trace/
+sidecar/captcha_samples/
+.qoder-credits/
+sidecar/sgcc_session.json
+sidecar/*.json
+sidecar/*.json.*
+sidecar/*.log
+sidecar/*.csv
+
+_scratch/

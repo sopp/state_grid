@@ -1,0 +1,7 @@
+# Never commit these: they are your live session and your household usage data.
+chrome-profile/
+trace/
+tmp_samples/
+sgcc_data.json
+*.log
+__pycache__/

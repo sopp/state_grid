@@ -154,8 +154,8 @@ _B='funcCode'
 _A='data'
 
 # ─── bilezhou 原版 API 常量 ───
-appKey='7e5b5e84ddad4994b0ebc68dedca4962'
-appSecret='2bc37a881e1541aaa6e6e174658d150b'
+appKey='0329843199564c55809c77959792b558'
+appSecret='4c1974786ee54d3bb4fb82c1ec5cd1a8'
 baseApi='https://www.95598.cn/api'
 get_request_key_api='/oauth2/outer/c02/f02'
 get_request_authorize_api='/oauth2/oauth/authorize'
@@ -400,7 +400,7 @@ class StateGridDataClient:
                 R='encryptData';Q='client_secret';P='application/json;charset=UTF-8';O='Content-Type';M=header;J='client_id';D=api;A.timestamp=int(time.time()*1000);E=A.timestamp
                 if A.keyCode is _D:A.keyCode=e(32,16,2)
                 G=A.keyCode;F={'Accept':P,O:P,'version':'1.0',_E:'0901',_s:str(E),'wsgwType':'web','appKey':appKey};C=data
-                if D==get_request_key_api:C={J:appKey,Q:appSecret};H=a(json_dumps(C),G);C={_A:H+c(H+str(E)),'skey':d(G,'042D12DFBC179202AC4B7B7BADCDA6FF7B604339263F6AB732CE7107B7EA3830A2CA714DC303920D3CFF7647D898F1A8CC6C24E9EC3CC194E22D984AF7E16B42DC'),J:appKey,_s:str(E)}
+                if D==get_request_key_api:C={J:appKey,Q:appSecret};H=a(json_dumps(C),G);C={_A:H+c(H+str(E)),'skey':d(G,'04461932EDC916BFEF2EA324056296214E8281FDF9F962C82E28D59C7B98BB5ED479801B8AB8F86E933B73A136A431D40E0FF769A7209E63E67C8B9326F277A058'),J:appKey,_s:str(E)}
                 elif D==get_request_authorize_api:
                         C={J:appKey,'response_type':_I,_Ap:'/test',_s:E,'rsi':A.token};C=urllib.parse.urlencode(C);F[O]='application/x-www-form-urlencoded; charset=UTF-8';F[_A9]=G;K=async_get_clientsession(A.hass,_N)
                         async with K.post(baseApi+D,data=C,headers=F)as L:B=await L.json();B=b(B[_A],A.token);B=json.loads(B);return B
