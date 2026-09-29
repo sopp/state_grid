@@ -1211,6 +1211,119 @@ def _push_route(driver, route: str) -> None:
         "if(vm&&vm.$router){try{vm.$router.push(arguments[0])}catch(e){}}", route)
 
 
+METER_ECHO_JS = r"""
+const m = (document.body.innerText || '').match(/用电户号[:：]\s*(\d{6,})/);
+return m ? m[1] : null;
+"""
+
+METER_OPEN_JS = r"""
+// The picker lives in the header block of the usage pages; Element UI mounts its dropdown
+// into body and toggles it on click, so callers must confirm it actually opened.
+const box = [...document.querySelectorAll('.el-select')]
+  .find(e => { const r = e.getBoundingClientRect(); return r.width > 60 && r.top > 300 && r.top < 600; });
+if (!box) return {error: 'no meter select on page'};
+box.click();
+return {ok: true};
+"""
+
+METER_COUNT_JS = r"""
+return [...document.querySelectorAll('.el-select-dropdown__item')]
+  .filter(e => e.getBoundingClientRect().height > 4).length;
+"""
+
+METER_PICK_JS = r"""
+const i = arguments[0];
+const items = [...document.querySelectorAll('.el-select-dropdown__item')]
+  .filter(e => e.getBoundingClientRect().height > 4);
+if (i >= items.length) return {error: 'index out of range', n: items.length};
+const t = (items[i].innerText || '').trim().slice(0, 40);
+items[i].click();
+return {ok: true, text: t};
+"""
+
+
+def payload_shape(rec: dict) -> str | None:
+    """Name a business payload by what it contains, because the captured URL is unreliable:
+    responses are recorded at JSON.parse time with no request context, and one gateway path
+    (c9/f02) carries several unrelated payloads."""
+    v = (rec or {}).get("value") or {}
+    d = v.get("data") if isinstance(v, dict) else None
+    if isinstance(d, str):
+        try:
+            d = json.loads(d)
+        except Exception:
+            d = None
+    if not isinstance(d, dict):
+        return None
+    for key, name in (("sevenEleList", "daily_ele"), ("mothEleList", "monthly_ele"),
+                      ("powerUserList", "meter_list")):
+        if key in d:
+            return name
+    b = d.get("bizrt")
+    if isinstance(b, dict) and "powerUserList" in b:
+        return "meter_list"
+    # Name anything else by its own keys: which payloads follow a meter switch is still unknown,
+    # and an unrecognised shape must show up in the report rather than be silently dropped.
+    return "other:" + "|".join(sorted(d)[:4])
+
+
+def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18) -> dict:
+    """Collect business payloads per meter, attributing each by the 户号 the page echoes back.
+
+    Attribution is self-verified rather than inferred: after selecting an option we read the
+    plaintext 用电户号 the page prints, and key everything collected under it. That is deliberate
+    - this integration previously shipped a meter cross-wiring bug caused by assuming order.
+    """
+    collected: dict[str, dict] = {}
+    for route in pages:
+        _push_route(driver, route)
+        time.sleep(8)
+        recs = driver.execute_script("return window.__apiResponses || [];") or []
+        echo = driver.execute_script(METER_ECHO_JS)
+        if not echo:
+            log.info("[meter] %s has no 用电户号 echo; skipping", route)
+            continue
+        # The page already fetched for its default meter on load; take that before clearing.
+        first = {s: r["value"] for r in recs if (s := payload_shape(r))}
+        log.info("[meter] %s default=%s shapes=%s", route, echo, list(first) or "none")
+        collected.setdefault(echo, {}).update(first)
+
+        driver.execute_script(METER_OPEN_JS)
+        time.sleep(1.2)
+        n = driver.execute_script(METER_COUNT_JS) or 0
+        if not n:
+            log.info("[meter] %s exposes no meter dropdown (single-meter page?)", route)
+            continue
+        for i in range(n):
+            for _ in range(3):                      # dropdown toggles and mounts lazily
+                if (driver.execute_script(METER_COUNT_JS) or 0) > 0:
+                    break
+                driver.execute_script(METER_OPEN_JS)
+                time.sleep(1.2)
+            driver.execute_script("window.__apiResponses = [];")
+            picked = driver.execute_script(METER_PICK_JS, i)
+            time.sleep(2.5)
+            echo = driver.execute_script(METER_ECHO_JS)
+            if not echo:
+                log.warning("[meter] %s option %s (%s): no echo after pick", route, i, picked)
+                continue
+            deadline = time.time() + wait
+            fresh: dict = {}
+            while time.time() < deadline:
+                time.sleep(2)
+                recs = driver.execute_script("return window.__apiResponses || [];") or []
+                fresh = {s: r["value"] for r in recs if (s := payload_shape(r))}
+                if fresh:
+                    break
+            log.info("[meter] %s option %s -> %s shapes=%s%s", route, i, echo,
+                     list(fresh) or "none", "" if fresh else " (no refetch: page shows default only)")
+            collected.setdefault(echo, {}).update(fresh)
+    out.write_text(json.dumps(collected, ensure_ascii=False, indent=1), encoding="utf-8")
+    log.info("[meter] %d meters x shapes: %s", len(collected),
+             {m: sorted(v) for m, v in collected.items()})
+    return collected
+
+
 def is_business(rec) -> bool:
     v = (rec or {}).get("value") or {}
     d = v.get("data")
@@ -1573,6 +1686,9 @@ def main() -> int:
                     help="how to answer a point-click challenge: vendored CV solver, "
                          "file handshake with an outside vision model (agent), the "
                          "integration's LLM solver (llm), or don't try")
+    ap.add_argument("--by-meter", default="", metavar="ROUTES",
+                    help="comma-separated pages to walk once per bound meter, attributing every "
+                         "payload by the 用电户号 the page echoes (e.g. /my95598,/electricityCharge)")
     ap.add_argument("--agent-timeout", type=int, default=300,
                     help="seconds to wait for the agent's reply in --captcha agent mode")
     args = ap.parse_args()
@@ -1734,6 +1850,9 @@ def main() -> int:
             json.dumps(walked, ensure_ascii=False, indent=1), encoding="utf-8")
         save_api_inventory(driver, Path(args.json_out + ".api"))
         export_browser_auth(driver, Path("sgcc_auth.json"))
+        if args.by_meter:
+            harvest_by_meter(driver, [r.strip() for r in args.by_meter.split(",") if r.strip()],
+                             Path(args.json_out + ".meters.json"))
         log.info("harvested %d decrypted API payloads across %d routes -> %s",
                  len(records), len(walked), args.json_out)
         for rec in records[:14]:
