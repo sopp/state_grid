@@ -105,7 +105,12 @@ HARVEST_JS = r"""
     try {
       if (out && typeof out === 'object' && window.__apiResponses.length < 300) {
         const keys = Object.keys(out);
-        if (keys.includes('data') || keys.includes('code')) {
+        // Not just {data,code} envelopes: some endpoints hand back their business object
+        // directly (the ladder payload is {billRead,pointList,readList}), and filtering those
+        // out is why c04/f03 never appeared in any harvest despite the request firing.
+        const known = ['data','code','billRead','pointList','readList','sevenEleList',
+                       'mothEleList','powerUserList','payList','consList','bizrt'];
+        if (keys.some(k => known.includes(k))) {
           const rec = { at: Date.now(), keys: keys, value: out,
                         url: window.__lastApiUrl || null, href: location.pathname };
           window.__apiResponses.push(rec);
@@ -1247,14 +1252,26 @@ def payload_shape(rec: dict) -> str | None:
     responses are recorded at JSON.parse time with no request context, and one gateway path
     (c9/f02) carries several unrelated payloads."""
     v = (rec or {}).get("value") or {}
-    d = v.get("data") if isinstance(v, dict) else None
+    if not isinstance(v, dict):
+        return None
+    # Some endpoints hand back the business object without a {code,data} envelope.
+    if "skey" in v and isinstance(v.get("data"), str):
+        return None                      # encrypted envelope, never decrypted by us
+    for key, name in (("billRead", "ladder"), ("pointList", "ladder"), ("readList", "ladder")):
+        if key in v:
+            return name
+    d = v.get("data")
     if isinstance(d, str):
         try:
             d = json.loads(d)
         except Exception:
             d = None
     if not isinstance(d, dict):
-        return None
+        # No envelope: name it by its own keys so an unfamiliar shape is reported, not dropped.
+        return "other:" + "|".join(sorted(v)[:4]) if v else None
+    for key in ("billRead", "pointList", "readList"):
+        if key in d:
+            return "ladder"
     for key, name in (("sevenEleList", "daily_ele"), ("mothEleList", "monthly_ele"),
                       ("powerUserList", "meter_list")):
         if key in d:
