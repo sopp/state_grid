@@ -924,6 +924,12 @@ def click_points_in_order(driver, bg_el, bg, points) -> bool:
     except Exception as exc:
         log.error("[captcha] confirm button failed: %s", exc)
         return False
+    # The login response (bizrt.token / bizrt.userInfo) is parsed only after the captcha clears,
+    # so patch this document now - waiting until harvest_routes would miss it entirely.
+    try:
+        driver.execute_script(HARVEST_JS)
+    except Exception as exc:
+        log.warning("[captcha] could not pre-arm the capture hook: %s", exc)
     # 95598 needs ~10s after confirm to finish the redirect; a fixed short sleep used to
     # report solved=False on runs that had actually passed (09:48:35 False vs 09:48:44 loggedIn).
     deadline = time.time() + 20
@@ -1107,8 +1113,21 @@ def export_browser_auth(driver, out: Path) -> dict:
     """
     try:
         got = driver.execute_script(
-            "return {auth: window.__auth || {hdr: [], body: []},"
-            "        resp: (window.__apiResponses || []).slice(-60)};") or {}
+            "const out = {auth: window.__auth || {hdr: [], body: []},"
+            "             resp: (window.__apiResponses || []).slice(-60),"
+            "             login: {token: null, userInfo: null, access_token: null}};"
+            "for (const r of (window.__apiResponses || [])) {"
+            "  const v = r && r.value; if (!v || typeof v !== 'object') continue;"
+            "  const d = v.data;"
+            "  if (d && typeof d === 'object' && d.bizrt) {"
+            "    if (!out.login.token && d.bizrt.token) out.login.token = d.bizrt.token;"
+            "    if (!out.login.userInfo && Array.isArray(d.bizrt.userInfo) && d.bizrt.userInfo.length)"
+            "      out.login.userInfo = d.bizrt.userInfo[0];"
+            "  }"
+            "  const at = v.access_token || (d && d.access_token) || (d && d.data && d.data.access_token);"
+            "  if (!out.login.access_token && at) out.login.access_token = at;"
+            "}"
+            "return out;") or {}
     except Exception as exc:
         log.error("[auth] capture read failed: %s", exc)
         return {}
@@ -1147,8 +1166,22 @@ def export_browser_auth(driver, out: Path) -> dict:
     for rec in got.get("resp", []):
         user_info = find_user_id((rec or {}).get("value")) or user_info
 
+    # Values the app itself parsed beat anything reconstructed from the wire: the login response
+    # carries the full token/userInfo, and getWebToken the full access_token.
+    login = got.get("login") or {}
+    if login.get("access_token"):
+        access = login["access_token"]
+    if login.get("token"):
+        token = login["token"]
+    if login.get("userInfo"):
+        user_info = login["userInfo"]
+    log.info("[auth] source: %s", "app-parsed" if login.get("token") else "header halves")
+
     payload = {"accessToken": access, "token": token, "userInfo": user_info,
-               "source": {"bearer_head": len(bearer), "access_tail": len(body.get("access_tail") or ""),
+               "source": {"access_full": bool(login.get("access_token")),
+                          "token_full": bool(login.get("token")),
+                          "app_parsed": bool(login.get("token") and login.get("access_token")),
+                          "bearer_head": len(bearer), "access_tail": len(body.get("access_tail") or ""),
                           "t_head": len(hdr.get("t") or ""), "bodies": len(bodies)}}
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
