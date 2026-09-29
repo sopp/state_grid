@@ -44,7 +44,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from captcha_solver.tencent import TencentCaptchaHandler
 
-BASE = "https://www.95598.cn"
+# A real browser session (HAR, 2026-09-28) uses the bare host; www. and bare are different
+# origins, so localStorage/sessionStorage, the 瑞数 cookie, the chosen region and the APM
+# device identity are all separate. Overridable to A/B that without editing constants.
+BASE = os.environ.get("SGCC_BASE", "https://www.95598.cn")
 LOGIN_URL = BASE + "/osgweb/login"
 HOME_URL = BASE + "/osgweb/my95598"
 def detect_chrome_ua() -> str:
@@ -916,8 +919,15 @@ def click_points_in_order(driver, bg_el, bg, points) -> bool:
     except Exception as exc:
         log.error("[captcha] confirm button failed: %s", exc)
         return False
-    time.sleep(random.uniform(1.5, 2.5))
-    return page_state(driver)["loggedIn"] or not page_state(driver)["on_login"]
+    # 95598 needs ~10s after confirm to finish the redirect; a fixed short sleep used to
+    # report solved=False on runs that had actually passed (09:48:35 False vs 09:48:44 loggedIn).
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        st = page_state(driver)
+        if st["loggedIn"] or not st["on_login"]:
+            return True
+        time.sleep(1.0)
+    return False
 
 
 def harvest(driver) -> list[dict]:
