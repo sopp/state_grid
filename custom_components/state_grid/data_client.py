@@ -622,6 +622,15 @@ class StateGridDataClient:
         # ────────────────────────────────────────────
         # __verify_click_captcha: 增强版（点选验证码f07端点）
         # ────────────────────────────────────────────
+        def _log_login_reject(tag, result):
+                """登录被服务端拒时只打这三样：code、srvrt 里的码和文案、顶层键名。
+                不打值本身（响应里可能带 token），也不打请求体（里面有密码）。"""
+                S = result.get('srvrt') or (result.get('data') or {}).get('srvrt') or {}
+                LOGGER.warning("[%s] code=%s resultCode=%s resultMessage=%s 顶层键=%s",
+                               tag, result.get('code'), S.get('resultCode'),
+                               S.get('resultMessage') or result.get('message'),
+                               sorted(result)[:8])
+
         async def __verify_click_captcha(B,account,password,code,loginKey):
                 C={'loginKey':loginKey,_I:code,'params':{_Q:{_m:'',_o:_AN,_l:_M,_n:''},_AX:{'optSys':'android','pushId':'000000','addressProvince':'110100',_AF:password,'addressRegion':'110101',_j:account,'addressCity':'330100'}},'Channels':'web'}
                 LOGGER.info(f"提交点选验证码(f07/clickCard): code={code}")
@@ -629,6 +638,7 @@ class StateGridDataClient:
                 if _I in A and str(A[_I])=='1':
                         if A[_A]and A[_A].get(_f)and A[_A][_f].get('resultCode')=='0000':B.token=A[_A][_AG][_AA];B.userInfo=A[_A][_AG][_AS][0];return{_G:0}
                 LOGGER.warning(f"clickCard(f07) 验证失败: {D}，尝试回退到 f06...")
+                B._log_login_reject('f07', A)
                 return{_G:1,_y:D}
 
         # ────────────────────────────────────────────
