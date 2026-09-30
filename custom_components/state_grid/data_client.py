@@ -617,11 +617,13 @@ class StateGridDataClient:
                 A=await B.__fetch(verify_password_api,C);D=B.handle_request_result_message('verify_password_api',A)
                 if A[_I]==1:
                         if A[_A]and A[_A][_f]and A[_A][_f]['resultCode']=='0000':B.token=A[_A][_AG][_AA];B.userInfo=A[_A][_AG][_AS][0];return{_G:0}
+                B._log_login_reject('f06/%s' % captcha_type, A)
                 return{_G:1,_y:D}
 
         # ────────────────────────────────────────────
         # __verify_click_captcha: 增强版（点选验证码f07端点）
         # ────────────────────────────────────────────
+        @staticmethod
         def _log_login_reject(tag, result):
                 """登录被服务端拒时只打这三样：code、srvrt 里的码和文案、顶层键名。
                 不打值本身（响应里可能带 token），也不打请求体（里面有密码）。"""
