@@ -972,8 +972,9 @@ class StateGridDataClient:
                         for A in C.powerUserList:
                                 A7=A[_g];C.doorAccountDict[A7]=A;await C.__get_door_balance(A)
                                 if C.need_login is _V:
-                                        # 由 sidecar 供数时不中止整轮：后面那块表的缓存数据
-                                        # 还要落进 doorAccountDict，一 return 就整批白吃
+                                        # 由 sidecar 供数时不中止整轮：refresh_data 每个电表取完余额就检查
+                                        # need_login，为真直接 return，后面那块表的缓存数据就没机会进
+                                        # doorAccountDict（09-30 真机 22:24 那轮命中日志停在第二块表余额之后）
                                         if C.push_fed:
                                                 LOGGER.warning('登录态失效，但本轮由 sidecar 供数，继续处理后面的电表')
                                                 C.need_login=_N
