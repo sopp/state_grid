@@ -173,6 +173,83 @@ keyCodeControlApiList=[verify_password_api,get_verify_code_api,get_request_autho
 authControlApiList=[get_door_number_api,get_door_balance_api,get_door_bill_api,get_door_ladder_api,get_door_daily_bill_api]
 tControlApiList=[get_door_number_api,get_door_balance_api,get_door_bill_api,get_door_ladder_api,get_door_daily_bill_api]
 
+# ─── sidecar 推送通道：载荷形状 → 本集成的 API 路径 ───
+# 形状名由 sidecar 的 payload_shape() 按"载荷里有什么"判定，不用 URL 做标识：
+# 一个网关路径会带多种无关载荷，顺序也不可信。
+PUSH_SHAPE_API={
+        'daily_ele':get_door_daily_bill_api,
+        'monthly_ele':get_door_bill_api,
+        'ladder':get_door_ladder_api,
+        'balance':get_door_balance_api,
+        'meter_list':get_door_number_api,
+}
+# 账户级载荷没有户号，缓存键的户号位固定为 None
+PUSH_ACCOUNT_SHAPES=('meter_list',)
+OK_CODES=('1','0000','000000')
+CONS_NO_KEYS=('consNo','consNoSrc','elecCustNo','custNo')
+
+
+def _find_key(obj, names):
+        """在待发请求里递归找第一个命中的键：各业务请求把同类信息放在不同深度
+        （data.consNo、queryElecCustList[].consNoSrc、params3.data.consNo…），逐个写死容易漏。"""
+        if isinstance(obj,dict):
+                for k,v in obj.items():
+                        if k in names and isinstance(v,(str,int)) and str(v).strip():
+                                return str(v).strip()
+                for v in obj.values():
+                        r=_find_key(v,names)
+                        if r:return r
+        elif isinstance(obj,list):
+                for v in obj:
+                        r=_find_key(v,names)
+                        if r:return r
+        return None
+
+
+def _cons_no_in(req):
+        return _find_key(req,CONS_NO_KEYS)
+
+
+def _period_in(req):
+        """请求限定的是哪一期：月账单按 queryYear 取，阶梯按 queryDate 取，日电量不带期间。"""
+        return _find_key(req,('queryDate','queryYear'))
+
+
+def _push_hit_key(api, req):
+        """推送缓存的键：账户级请求不带户号。期间和日期区间是命中条件，不放键里。"""
+        if api == get_door_number_api:
+                return (api,None)
+        return (api,_cons_no_in(req))
+
+
+def _d8(s):
+        return str(s).replace('-','')
+
+
+def _push_covers(api, req, entry):
+        """这条载荷够不够回答这个请求。缓存值 = (响应, 期间, 覆盖起, 覆盖止)。
+
+        期间：月账单请求带 queryYear、阶梯带 queryDate。两边有一边说了期间就必须对上，
+        宁可不命中退回真实请求，也不能拿 2026 年的数去答 2025 年。
+        区间：日电量页面只给最近 7 天，而 refresh_data 先要最近 40 天、之后还按月各取一段。
+        7 天冒充 40 天会把当月合计算少，那是错数不是缺数，所以按起止日期再卡一层。
+        """
+        P,S,E=entry[1],entry[2],entry[3]
+        RP=_period_in(req)
+        if (P or RP) and P!=RP:return False
+        if api==get_door_daily_bill_api:
+                A0=_find_key(req,('startTime',));B0=_find_key(req,('endTime',))
+                if A0 and B0 and not (S and E and S<=_d8(A0) and _d8(B0)<=E):return False
+        return True
+
+
+def _normalize_pushed_daily(resp):
+        """页面版 c24/f01 的 day 是 '2026-09-28'，接口版是 '20260928'，而 refresh_data 里
+        strptime 按后者写死。在入口统一掉，别让两种格式流进后面的解析。"""
+        for row in ((resp.get(_A) or {}).get('sevenEleList')) or []:
+                d=row.get('day')
+                if isinstance(d,str) and '-' in d:row['day']=d.replace('-','')
+
 # ─── bilezhou 原版业务配置（不变） ───
 configuration={_Q:{_l:_M,_m:'',_n:'',_o:_AN},_E:_U,_T:'32101',_H:_M,_AM:_M,'toPublish':_a,'siteId':'2012000000033700',_L:'',_O:'',_B:'',_C:{_u:_e,'uploadPic':'0101296','pauseSCode':'0101250','pauseTCode':'0101251','listconsumers':'0101093','messageList':'0101343','submit':'0101003','sbcMsg':'0101210','powercut':'0104514','BkAuth01':'f15','BkAuth02':'f18','BkAuth03':'f02','BkAuth04':'f17','BkAuth05':'f05','BkAuth06':'f16','BkAuth07':'f01','BkAuth08':'f03'},'electricityArchives':{'servicecode':'0104505',_E:_M},'subscriptionList':{_L:'APP_SGPMS_05_030',_O:'22',_H:_M,_B:'22',_T:'-1'},'userInformation':{_C:'01008183',_E:_U},'userInform':{_C:_p,_E:_U},'elesum':{_H:_M,_B:_v,_b:_F,_R:_F,_C:'0101143',_E:_w},_j:{_H:_M,_B:'WEBA1007200'},_Ac:{_E:_M,_T:'-1',_H:_q,_AM:_q,_C:_A7,_B:'WEBA40050000',_Q:{_l:_M,_m:'',_n:'',_o:_AN}},'doorAuth':{_E:_U,_C:'f04'},'xinZ':{_K:'101',_Ad:'101','fJ_busiTypeCode':'102',_Ae:'03','fJ_custType':'02',_Af:_a,_P:'',_B:_AO,_u:_e,_E:_U,_A8:_F},'onedo':{_C:_AE,_E:_U,_B:_AO,'queryType':'03'},'xinHuTongDian':{_K:'110',_J:'211',_P:'21102',_B:'WEBA10071200',_H:_M,_E:_q,_C:_p},'company':{_K:'104',_B:_AO,_Af:'02',_A8:_F,_r:_F,_E:_U,_u:_e},'charge':{_H:_q,_B:'WEBA10071300',_AM:'0901',_K:'102',_Ae:_a,_Ad:'102'},'other':{_H:_q,_B:'WEBA10079700',_K:'129',_J:'999',_P:'21501',_C:_x,_L:'',_O:''},'vatchange':{'submit':'0101003',_J:'320',_P:'',_K:'115',_B:'WEBA10074000',_r:_F},'bill':{_c:_F,_B:_v,_R:_F,_C:_x},_k:{_H:_M,_B:_v,_R:_F,_c:_q,_C:_x,_E:_w},_d:{_H:_M,_c:'11',_B:_v,_b:_F,_R:_F,_C:_x,_E:_w},'mouthOut':{_H:_M,_c:'11',_B:_v,_b:_F,_R:_F,_C:_x,_E:_w},'meter':{_K:'114',_J:'304',_B:'WEBA10071000',_P:'',_C:_AE,_O:''},'complaint':{_J:'005','srvMode':_M,'anonymousFlag':'0','replyMode':_a,'retvisitFlag':_a},'report':{_J:'006'},'tradewinds':{_J:'019'},'somesay':{_J:'091'},'faultrepair':{_B:_Ag,_C:_p,_K:'111',_J:'001',_P:'21505'},'electronicInvoice':{_K:'105',_J:'0'},'rename':{_C:_AE,_B:'WEBA10076100',_J:'210',_K:'109',_r:_F,'gh_busiTypeCode':'211','gh_subusi':'21101',_O:'',_L:''},'pause':{_P:'',_C:_A7,_B:'WEBA10073600',_K:'107',_J:'203','jr_busi':'201',_O:'',_L:''},'capacityRecovery':{_C:_A7,_E:_U,_L:'',_O:'',_B:'WEBA10073700','busiTypeCode_stop':'204','busiTypeCode_less':'202',_J:'202',_P:'',_K:'108',_AP:'5',_r:_F},'electricityPriceChange':{_C:_p,_J:'215',_P:'21502',_K:'113',_r:_F,_AP:'15',_B:'WEBA10073900WEB',_L:'',_O:''},'electricityPriceStrategyChange':{_C:'01008183',_J:'215',_P:'21506',_K:'160',_B:'WEBV00000517WEB',_L:'',_O:''},'eemandValueAdjustment':{_C:_p,_L:'',_O:'',_K:'112',_B:'WEBA10073800',_J:'215',_P:'21504',_r:_F,_AP:'5','getMonthServiceCode':_AE},'businessProgress':{_C:_p,_L:_a,_B:'WEB01'},'increase':{_E:_U,_O:'',_L:'',_Ah:_A7,_C:_e,_u:_e,_B:_AQ,_A8:_F,_K:'106',_J:'111',_P:''},'fjincrea':{_K:'105',_J:'110',_P:'',_E:_U,_B:_AQ,_O:'',_L:'',_Ah:_A7,_C:_e,_u:_e,_A8:_F},'persIncrea':{_K:'105',_J:'109',_u:_e,_P:'',_E:_U,_B:_AQ,_A8:_F},'fgdChange':{_C:_p,_L:_a,_H:_q,_B:_Ag,_J:'215',_P:'21505',_K:'111',_r:_F},'createOrder':{_H:_M,_B:_v,_L:'BCP_000001','chargeMode':'02','conType':_a,'bizTypeId':'BT_ELEC'},'largePopulation':{_J:'383',_B:'WEBA10076800',_P:'',_L:'',_R:'',_b:'',_H:'0901',_K:'383',_C:'',_O:''},'biaoJiCode':{_C:'0104507',_E:'1704',_H:'1704'},'twoGuar':{_J:'402',_P:'40201',_B:'web_twoGuar'},'electTrend':{_C:_Ai,_H:_M},'emergency':{_C:_Ai,_B:'A10000000',_H:_M},'infoPublic':{_C:'2545454',_E:_w}}
 
@@ -249,6 +326,10 @@ class StateGridDataClient:
         # ── 增强字段：登录失败冷却时间戳（防止 5 分钟内反复重登 → LLM 大量消耗） ──
         _login_fail_cooldown_until = 0.0
 
+        # ── 增强字段：sidecar 推送来的响应缓存 {(api, 户号): (响应, 期间, 覆盖起, 覆盖止)} ──
+        push_cache = {}
+        push_meta = _D
+
         # ────────────────────────────────────────────
         # __init__: bilezhou 原版 + 增强字段加载
         # ────────────────────────────────────────────
@@ -271,6 +352,9 @@ class StateGridDataClient:
                                 if _saved_ts and isinstance(_saved_ts,(int,float)) and _saved_ts>0:A.timestamp=int(_saved_ts)
                         except Exception as C:LOGGER.error(C)
 
+                # 类属性 push_cache 是全实例共用的一份 dict，这里换新，避免多个实例互相消费对方的数据
+                A.push_cache={};A.push_meta=_D
+
                 # 配置 LLM 客户端（延迟加载）
                 if A.llm_api_key:
                         _captcha_solver.configure_llm(A.llm_api_key,A.llm_base_url,A.llm_model)
@@ -287,6 +371,44 @@ class StateGridDataClient:
                 # 保存 timestamp，使重启后 12 小时间隔判断仍然正确
                 A[_s]=B.timestamp
                 await async_save_to_store(B.hass,'state_grid.config',A)
+
+        # ────────────────────────────────────────────
+        # ingest_push: 接收 sidecar 浏览器抓取的一次登录成果
+        # ────────────────────────────────────────────
+        async def ingest_push(A,bundle):
+                """把 sidecar 推来的 {items:[{shape,consNo,response}]} 装进一次性缓存。
+
+                每次推送整包替换：跨代残留会被下一轮误当成新数据消费。
+                """
+                items=(bundle or {}).get('items') or []
+                cache={};skipped=[]
+                for it in items:
+                        shape=(it or {}).get('shape');api=PUSH_SHAPE_API.get(shape);resp=(it or {}).get('response')
+                        if api is _D or not isinstance(resp,dict):
+                                skipped.append(str(shape));continue
+                        if str(resp.get('code'))not in OK_CODES:
+                                skipped.append(f"{shape}:code={resp.get('code')}");continue
+                        cons=None if shape in PUSH_ACCOUNT_SHAPES else str(it.get('consNo') or '').strip()
+                        if shape not in PUSH_ACCOUNT_SHAPES and not cons:
+                                skipped.append(f"{shape}:无户号");continue
+                        if shape=='daily_ele':_normalize_pushed_daily(resp)
+                        year=((resp.get(_A) or {}).get('dataInfo') or {}).get('year')
+                        days=[_d8(r['day']) for r in ((resp.get(_A) or {}).get('sevenEleList') or [])
+                              if r.get('day')]
+                        years={d[:4] for d in days}
+                        # 跨年的 7 天窗口说不清自己算哪一年，就把期间留空，别猜
+                        period=str(it.get('period') or year or
+                                   (list(years)[0] if len(years)==1 else '')).strip() or None
+                        span=(min(days),max(days)) if days else (None,None)
+                        cache[(api,cons)]=(resp,period,span[0],span[1])
+                A.push_cache=cache
+                A.push_meta={'received_at':int(time.time()*1000),'items':len(cache),
+                             'pushed_at':(bundle or {}).get('pushed_at'),'skipped':skipped[:8]}
+                # 数据的"新鲜时间"就是推送时间：不更新 timestamp 的话 12 小时闸门一直是开的，
+                # 缓存抽干后每 5 分钟的轮询都会退回 HTTP 取数，白烧风控额度
+                A.timestamp=int(time.time()*1000)
+                LOGGER.info('sidecar 推送入仓 %d 条（跳过 %d）',len(cache),len(skipped))
+                return len(cache)
 
         # ────────────────────────────────────────────
         # 以下为 bilezhou 原版方法（不变）
@@ -397,6 +519,15 @@ class StateGridDataClient:
         # __fetch: bilezhou 原版（不变）
         # ────────────────────────────────────────────
         async def __fetch(A,api,data,header=_D):
+                # sidecar 用真实浏览器抓到的响应优先命中，消费一次即失效：
+                # 同一份载荷不该同时喂给两个不同的请求（例如日电量的近 40 天窗口和补月的窗口）。
+                if A.push_cache:
+                        K0=_push_hit_key(api,data)
+                        B0=A.push_cache.get(K0,_D)
+                        if B0 is not _D and _push_covers(api,data,B0):
+                                A.push_cache.pop(K0,_D)
+                                LOGGER.info('命中 sidecar 推送: %s 户号=%s',api,K0[1])
+                                return B0[0]
                 R='encryptData';Q='client_secret';P='application/json;charset=UTF-8';O='Content-Type';M=header;J='client_id';D=api;A.timestamp=int(time.time()*1000);E=A.timestamp
                 if A.keyCode is _D:A.keyCode=e(32,16,2)
                 G=A.keyCode;F={'Accept':P,O:P,'version':'1.0',_E:'0901',_s:str(E),'wsgwType':'web','appKey':appKey};C=data
@@ -889,7 +1020,10 @@ class StateGridDataClient:
                         # 全部成功才更新 timestamp 并保存
                         # timestamp 已在 __fetch 中更新为最新请求时间，无需额外设置
                         await C.save_data()
-                except:
+                except Exception:
+                        # 裸 except 会把中断现场一起吞掉，排查时什么线索都没有；
+                        # is_debug 下补一份回溯，行为（还原 timestamp、返回 0）保持不变。
+                        if C.is_debug:LOGGER.exception('refresh_data 中断')
                         # 异常时还原 timestamp，避免下次 12 小时判断错误
                         C.timestamp=_orig_ts
                         return 0

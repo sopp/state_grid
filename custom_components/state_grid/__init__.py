@@ -1,6 +1,12 @@
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.const import Platform
+from homeassistant.components.webhook import (
+    async_register as webhook_register,
+    async_unregister as webhook_unregister,
+)
+from aiohttp import web
+import secrets
 from .const import DOMAIN
 from .utils.logger import LOGGER
 from .utils.store import async_load_from_store
@@ -9,6 +15,7 @@ from . import click_captcha_solver
 from .config_flow import StateGridOnnxConfigFlow
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+CONF_PUSH_WEBHOOK = "push_webhook_id"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -46,7 +53,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN] = data_client
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await _async_setup_push_webhook(hass, entry, data_client)
     return True
+
+
+async def _async_setup_push_webhook(hass: HomeAssistant, entry: ConfigEntry,
+                                    data_client: StateGridDataClient) -> None:
+    """注册 sidecar 推送入口：/api/webhook/<id>。
+
+    id 是随机 128 位，首次 setup 生成后写进 entry.data 持久化，用户不用在任何界面里填。
+    只允许内网推送（sidecar 和 HA 在同一台 NAS 局域网上），外网访问直接拒。
+    """
+    webhook_id = (entry.data or {}).get(CONF_PUSH_WEBHOOK)
+    if not webhook_id:
+        webhook_id = secrets.token_hex(16)
+        hass.config_entries.async_update_entry(
+            entry, data={**(entry.data or {}), CONF_PUSH_WEBHOOK: webhook_id})
+        LOGGER.info("已生成 sidecar 推送地址: /api/webhook/%s", webhook_id)
+
+    async def handle_push(hass: HomeAssistant, webhook_id: str, request: web.Request) -> web.Response:
+        try:
+            bundle = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "body 不是 JSON"}, status=400)
+        count = await data_client.ingest_push(bundle)
+        # 先回响应再刷新：解析 800 行数据要几秒，别让 sidecar 干等一个可能超时的大请求
+        coordinator = data_client.coordinator
+        if coordinator is not None:
+            hass.async_create_task(coordinator.async_refresh())
+        else:
+            LOGGER.warning("收到 sidecar 推送但 coordinator 还没就绪，数据留在缓存里等下一次轮询")
+        return web.json_response({"ok": True, "stored": count, "meta": data_client.push_meta})
+
+    webhook_register(hass, DOMAIN, "state_grid sidecar push", webhook_id, handle_push, local_only=True)
+    entry.async_on_unload(lambda: webhook_unregister(hass, webhook_id))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

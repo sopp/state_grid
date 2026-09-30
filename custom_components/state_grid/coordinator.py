@@ -20,9 +20,11 @@ class StateGridCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         # 智能判断是否需要强制刷新：
         # - 首次安装（powerUserList 为空）：必须强制刷新，否则永远拉不到数据
+        # - sidecar 刚推来一批浏览器抓的响应：必须刷新一次，不然这批数据没人消费就过期了
         # - 重启场景（有缓存数据）：不强制刷新，由 refresh_data 内部 12 小时判断决定
         #   这样可以避免重启就触发 API 调用，消耗 RK001 日额度
         has_cached_data = bool(self.data_client.powerUserList)
-        force_refresh = not has_cached_data
+        push_pending = bool(self.data_client.push_cache)
+        force_refresh = not has_cached_data or push_pending
         await self.data_client.refresh_data(force_refresh=force_refresh)
         return self.data_client.get_door_account()

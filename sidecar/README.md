@@ -19,6 +19,23 @@ Measured 2026-09-26; see the notes in `sgcc_sidecar.py`.
 5. Reads data by letting the SPA decrypt its own responses, captured through a `JSON.parse`
    hook installed before page scripts run.
 
+## Pushing into Home Assistant
+The integration registers a webhook on first setup and logs its path once:
+`/api/webhook/<128-bit random id>` (LAN-only). Point the sidecar at it through the environment:
+
+    HA_WEBHOOK_URL='http://<nas-ip>:8123' HA_WEBHOOK_TOKEN='<the id printed in the HA log>' \
+    SGCC_PASSWORD='...' python sgcc_sidecar.py --account you@example.com --captcha llm \
+        --by-meter /electricityCharge --push
+
+`--push` only sends the per-meter bundle (`<json-out>.meters.json`), because that is the only
+data whose meter attribution is self-verified. On the HA side `data_client.__fetch` checks that
+cache before signing a request, serves each payload once, and otherwise behaves exactly as
+before — so a page the sidecar could not reach still falls back to the normal HTTP path.
+
+Daily unattended run: the profile keeps 95598's session cookies, so a scheduled
+`--harvest-only --by-meter ... --push` costs no login while the cookies live, and only falls
+back to a full login run when they expire.
+
 ## Run
     pip install -r requirements.txt
     SGCC_PASSWORD='...' python sgcc_sidecar.py --account you@example.com --check   # no login

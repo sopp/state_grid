@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ import random
 import re
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import io
@@ -1305,6 +1307,11 @@ def payload_shape(rec: dict) -> str | None:
     for key in ("billRead", "pointList", "readList"):
         if key in d:
             return "ladder"
+    # 余额藏在 data.list[0] 里，键名和别页的 list 撞车，所以必须认字段不能认键名
+    lst = d.get("list")
+    if isinstance(lst, list) and lst and isinstance(lst[0], dict) and any(
+            k in lst[0] for k in ("estiAmt", "prepayBal", "historyOwe")):
+        return "balance"
     for key, name in (("sevenEleList", "daily_ele"), ("mothEleList", "monthly_ele"),
                       ("powerUserList", "meter_list")):
         if key in d:
@@ -1317,14 +1324,47 @@ def payload_shape(rec: dict) -> str | None:
     return "other:" + "|".join(sorted(d)[:4])
 
 
+def _digest(payload) -> str:
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+
+
+# 账号级载荷：本来就只有一份，逐表相同不是串号
+ACCOUNT_SHAPES = {"meter_list"}
+
+
 def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18) -> dict:
     """Collect business payloads per meter, attributing each by the 户号 the page echoes back.
 
     Attribution is self-verified rather than inferred: after selecting an option we read the
     plaintext 用电户号 the page prints, and key everything collected under it. That is deliberate
     - this integration previously shipped a meter cross-wiring bug caused by assuming order.
+
+    The echo alone is not enough: on some pages picking another meter repaints the header but
+    refetches nothing, so the buffer still holds the previous meter's response. We hash each
+    payload and refuse to file an exact duplicate under a second 户号 - 09-29 a run did exactly
+    that and wrote the same 80.28 series under both meters.
     """
     collected: dict[str, dict] = {}
+    owners: dict[tuple[str, str], str] = {}
+
+    def take(cons: str, payloads: dict, whence: str) -> dict:
+        keep: dict = {}
+        for shape, value in payloads.items():
+            if shape in ACCOUNT_SHAPES:
+                keep[shape] = value
+                continue
+            who = owners.get((shape, _digest(value)))
+            if who is not None and who != cons:
+                log.warning("[meter] %s 的 %s 与 %s 逐字节相同（%s）：页面没有按选中的表重发，"
+                            "归属无法自证，丢弃", cons, shape, who, whence)
+                continue
+            owners[(shape, _digest(value))] = cons
+            keep[shape] = value
+        if keep:
+            collected.setdefault(cons, {}).update(keep)
+            log.info("[meter] %s <- %s (%s)", cons, sorted(keep), whence)
+        return keep
+
     for route in pages:
         _push_route(driver, route)
         time.sleep(8)
@@ -1336,7 +1376,7 @@ def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18) -> dic
         # The page already fetched for its default meter on load; take that before clearing.
         first = {s: r["value"] for r in recs if (s := payload_shape(r))}
         log.info("[meter] %s default=%s shapes=%s", route, echo, list(first) or "none")
-        collected.setdefault(echo, {}).update(first)
+        take(echo, first, f"{route} 首屏")
 
         driver.execute_script(METER_OPEN_JS)
         time.sleep(1.2)
@@ -1358,20 +1398,80 @@ def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18) -> dic
                 log.warning("[meter] %s option %s (%s): no echo after pick", route, i, picked)
                 continue
             deadline = time.time() + wait
-            fresh: dict = {}
+            settled: float | None = None
+            keep: dict = {}
             while time.time() < deadline:
                 time.sleep(2)
                 recs = driver.execute_script("return window.__apiResponses || [];") or []
                 fresh = {s: r["value"] for r in recs if (s := payload_shape(r))}
                 if fresh:
+                    keep.update(take(echo, fresh, f"{route} opt{i}"))
+                    driver.execute_script("window.__apiResponses = [];")
+                    settled = time.time() + 6       # 到齐判定：再静置一轮，收后续到达的表级载荷
+                if settled is not None and time.time() >= settled:
                     break
             log.info("[meter] %s option %s -> %s shapes=%s%s", route, i, echo,
-                     list(fresh) or "none", "" if fresh else " (no refetch: page shows default only)")
-            collected.setdefault(echo, {}).update(fresh)
+                     sorted(keep) or "none", "" if keep else " (no usable refetch)")
     out.write_text(json.dumps(collected, ensure_ascii=False, indent=1), encoding="utf-8")
     log.info("[meter] %d meters x shapes: %s", len(collected),
              {m: sorted(v) for m, v in collected.items()})
     return collected
+
+
+def build_push_items(collected: dict) -> list[dict]:
+    """Flatten {户号: {形状: 响应}} into the list the HA webhook expects.
+
+    Shapes we have no consumer for in the integration stay out of the bundle rather than
+    arriving as data HA would have to guess about.
+    """
+    pushable = ("daily_ele", "monthly_ele", "ladder", "balance", "meter_list")
+    items: list[dict] = []
+    for cons, shapes in (collected or {}).items():
+        for shape in pushable:
+            value = shapes.get(shape)
+            if isinstance(value, dict):
+                items.append({"shape": shape, "consNo": cons, "response": value})
+    return items
+
+
+def push_to_ha(items: list[dict], url: str, token: str, timeout: int = 30) -> dict:
+    """POST the harvested bundle to HA's webhook endpoint and return its verdict.
+
+    The webhook token is a credential, so it rides in the URL only, is never logged, and the
+    caller must pass it via the environment rather than argv.
+    """
+    body = json.dumps({
+        "pushed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "items": items,
+    }).encode()
+    target = url.rstrip("/") + "/api/webhook/" + token
+    req = urllib.request.Request(target, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            verdict = json.loads(resp.read().decode())
+    except Exception as exc:
+        # urlopen 的报错会把完整 URL 带进来，而 token 就写在 URL 里
+        text = str(exc).replace(token, "***")
+        log.error("push failed: %s", text)
+        return {"ok": False, "error": text}
+    log.info("pushed %d payloads -> HA stored=%s skipped=%s",
+             len(items), verdict.get("stored"), (verdict.get("meta") or {}).get("skipped"))
+    return verdict
+
+
+def push_harvest(collected: dict) -> dict:
+    """Push the per-meter bundle using HA_WEBHOOK_URL / HA_WEBHOOK_TOKEN (env only)."""
+    url = os.environ.get("HA_WEBHOOK_URL", "")
+    token = os.environ.get("HA_WEBHOOK_TOKEN", "")
+    if not url or not token:
+        log.error("--push 需要环境变量 HA_WEBHOOK_URL 与 HA_WEBHOOK_TOKEN，当前缺少其一")
+        return {"ok": False}
+    items = build_push_items(collected)
+    if not items:
+        log.error("--push：逐表取数没拿到任何可推送载荷，不推空包（HA 会把旧缓存整包换掉）")
+        return {"ok": False}
+    return push_to_ha(items, url, token)
 
 
 def is_business(rec) -> bool:
@@ -1741,7 +1841,14 @@ def main() -> int:
                          "payload by the 用电户号 the page echoes (e.g. /my95598,/electricityCharge)")
     ap.add_argument("--agent-timeout", type=int, default=300,
                     help="seconds to wait for the agent's reply in --captcha agent mode")
+    ap.add_argument("--push", action="store_true",
+                    help="POST the per-meter bundle to the Home Assistant webhook; the URL comes "
+                         "from HA_WEBHOOK_URL (e.g. http://172.16.1.x:8123) and the webhook token "
+                         "from HA_WEBHOOK_TOKEN — env only, never argv, never logged")
     args = ap.parse_args()
+
+    if args.push and not args.by_meter:
+        ap.error("--push 只推逐表取数的结果：请加 --by-meter <页面>，否则没有归属可信的数据可推")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if not args.account and not (args.check or args.watch_only or args.harvest_only
@@ -1794,6 +1901,12 @@ def main() -> int:
             total = sum(len(v) for v in data.values())
             log.info("harvested %d payloads across %d routes -> %s", total, len(data), args.json_out)
             save_api_inventory(driver, Path(args.json_out + ".api"))
+            if args.by_meter:
+                collected = harvest_by_meter(
+                    driver, [r.strip() for r in args.by_meter.split(",") if r.strip()],
+                    Path(args.json_out + ".meters.json"))
+                if args.push:
+                    push_harvest(collected)
             if sess:
                 save_session(driver, sess)
             if args.watch_ttl:
@@ -1901,8 +2014,11 @@ def main() -> int:
         save_api_inventory(driver, Path(args.json_out + ".api"))
         export_browser_auth(driver, Path("sgcc_auth.json"))
         if args.by_meter:
-            harvest_by_meter(driver, [r.strip() for r in args.by_meter.split(",") if r.strip()],
-                             Path(args.json_out + ".meters.json"))
+            collected = harvest_by_meter(
+                driver, [r.strip() for r in args.by_meter.split(",") if r.strip()],
+                Path(args.json_out + ".meters.json"))
+            if args.push:
+                push_harvest(collected)
         log.info("harvested %d decrypted API payloads across %d routes -> %s",
                  len(records), len(walked), args.json_out)
         for rec in records[:14]:
