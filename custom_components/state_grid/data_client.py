@@ -226,20 +226,32 @@ def _d8(s):
         return str(s).replace('-','')
 
 
+def _month_first(d8):
+        return d8[:6]+'01'
+
+
 def _push_covers(api, req, entry):
         """这条载荷够不够回答这个请求。缓存值 = (响应, 期间, 覆盖起, 覆盖止)。
 
         期间：月账单请求带 queryYear、阶梯带 queryDate。两边有一边说了期间就必须对上，
         宁可不命中退回真实请求，也不能拿 2026 年的数去答 2025 年。
-        区间：日电量页面只给最近 7 天，而 refresh_data 先要最近 40 天、之后还按月各取一段。
-        7 天冒充 40 天会把当月合计算少，那是错数不是缺数，所以按起止日期再卡一层。
+
+        区间：页面最宽只给近 30 天（实测 31 行，如 2026-08-30..09-29），而 refresh_data 的主请求
+        问的是近 40 天。逐行读过解析器（refresh_data 里那段按月合计的循环）后，它从这份数据
+        真正用到的只有两样：最后一天的分时电量、以及"与最后一天同月"的那些行逐行相加（遇到跨月
+        就 break），加上 recent_30_daily_ele_list 取前 30 行。所以判定按实际用途来：
+        末日必须正好是请求的末日，起点必须不晚于「请求起点」与「末日所在月1号」里较晚的那个。
+        按月回补那种请求（末日是别的月份）天然对不上，会退回真实请求。
         """
         P,S,E=entry[1],entry[2],entry[3]
         RP=_period_in(req)
         if (P or RP) and P!=RP:return False
         if api==get_door_daily_bill_api:
                 A0=_find_key(req,('startTime',));B0=_find_key(req,('endTime',))
-                if A0 and B0 and not (S and E and S<=_d8(A0) and _d8(B0)<=E):return False
+                if A0 and B0:
+                        if not (S and E):return False
+                        if E!=_d8(B0):return False
+                        if S>max(_d8(A0),_month_first(E)):return False
         return True
 
 
@@ -256,9 +268,11 @@ configuration={_Q:{_l:_M,_m:'',_n:'',_o:_AN},_E:_U,_T:'32101',_H:_M,_AM:_M,'toPu
 # ─── bilezhou 原版工具函数（不变） ───
 def json_dumps(data):return json.dumps(data,separators=(',',':'),ensure_ascii=_N)
 def normal_round(num,ndigits=0):
-        A=ndigits
-        if A==0:return int(num+.5)
-        else:B=10**A;return int(num*B+.5)/B
+        # int() 是向零截断的：负数走 int(x+0.5) 会把 -14.630000000000003 变成 -14.62。
+        # 欠费户的余额就是负数，实测 sumMoney -14.63 显示成 -14.62，所以负半边单独处理，
+        # 正数的行为一个字节都没改。
+        A=ndigits;B=10**A;R=(num*B if A else num)
+        return (int(R+.5) if R>=0 else -int(-R+.5))/(B if A else 1)
 def catchFloat(data,key):
         if key in data:
                 try:return normal_round(float(data[key]),2)
@@ -1003,7 +1017,10 @@ class StateGridDataClient:
                                 if a.month==12:M=A[_AD];N=A[_A3];O=A[_A4];P=A[_A5];Q=A[_A6]
                                 else:
                                         if J in A:
-                                                for B in A[J]:M+=catchFloat(B,e);N+=B[_A3];O+=B[_A4];P+=B[_A5];Q+=B[_A6]
+                                                # 月条目里的 month_*_ele_num 是按日回补成功时才写的
+                                                # （__get_door_daily_bill 带 monthBill 那条路），没补上就缺键。
+                                                # M 本来就是 catchFloat 读法，这里统一，免得某个月回补失败炸掉整轮。
+                                                for B in A[J]:M+=catchFloat(B,e);N+=catchFloat(B,_A3);O+=catchFloat(B,_A4);P+=catchFloat(B,_A5);Q+=catchFloat(B,_A6)
                                         if K and G.month!=a.month:M+=A[_AD];N+=A[_A3];O+=A[_A4];P+=A[_A5];Q+=A[_A6]
                                 A[T]=normal_round(M,2);A['year_p_ele_num']=normal_round(N,2);A['year_v_ele_num']=normal_round(O,2);A['year_n_ele_num']=normal_round(P,2);A['year_t_ele_num']=normal_round(Q,2)
                                 if _i in A:
@@ -1013,7 +1030,7 @@ class StateGridDataClient:
                                 else:A[A4]=[]
                                 if _S in A:
                                         A[_S]=sorted(A[_S],key=lambda x:x[_Z],reverse=_V);c=[]
-                                        for B in A[_S][:12]:c.append({_Z:B[_Z],'cost':normal_round(catchFloat(B,A3),2),'ele':normal_round(catchFloat(B,e),2),'v_ele':B[_A4],'p_ele':B[_A3],'n_ele':B[_A5],'t_ele':B[_A6]})
+                                        for B in A[_S][:12]:c.append({_Z:B[_Z],'cost':normal_round(catchFloat(B,A3),2),'ele':normal_round(catchFloat(B,e),2),'v_ele':catchFloat(B,_A4),'p_ele':catchFloat(B,_A3),'n_ele':catchFloat(B,_A5),'t_ele':catchFloat(B,_A6)})
                                         c.reverse();A[A5]=c
                                 else:A[A5]=[]
                                 A['refresh_time']=datetime.datetime.strftime(H,'%Y-%m-%d %H:%M:%S')

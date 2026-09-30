@@ -1324,6 +1324,22 @@ def payload_shape(rec: dict) -> str | None:
     return "other:" + "|".join(sorted(d)[:4])
 
 
+CLICK_TEXT_JS = r"""
+// 页面上的「近7天/近30天」「日用电量」这类切换条没有稳定选择器（radio/tab/裸 span 都可能），
+// 按可见文本点最深的那个元素：外层容器点了不生效，标签本身才绑事件。
+const want = arguments[0];
+const all = [...document.querySelectorAll('.el-radio,.el-radio__label,.el-checkbox,.el-checkbox__label,'
+                                          + 'li,button,span,div,a')];
+const hit = all.filter(e => (e.innerText || '').trim() === want
+                        && e.getBoundingClientRect().width > 0);
+if (!hit.length) return {error: 'no such control', want: want,
+                         seen: all.map(e => (e.innerText || '').trim())
+                                  .filter(t => /近\\d+天|日用电量|月度电费/.test(t)).slice(0, 8)};
+hit[hit.length - 1].click();
+return {ok: true, n: hit.length};
+"""
+
+
 def _digest(payload) -> str:
     return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 
@@ -1332,7 +1348,8 @@ def _digest(payload) -> str:
 ACCOUNT_SHAPES = {"meter_list"}
 
 
-def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18) -> dict:
+def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18,
+                     set_window=None) -> dict:
     """Collect business payloads per meter, attributing each by the 户号 the page echoes back.
 
     Attribution is self-verified rather than inferred: after selecting an option we read the
@@ -1343,6 +1360,11 @@ def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18) -> dic
     refetches nothing, so the buffer still holds the previous meter's response. We hash each
     payload and refuse to file an exact duplicate under a second 户号 - 09-29 a run did exactly
     that and wrote the same 80.28 series under both meters.
+
+    set_window(driver) runs once per page load and once after every meter pick. Whether a
+    meter switch resets the 近7天/近30天 choice on its own wasn't isolated; re-asserting at both
+    points costs one click and covers both answers. 09-30 run: both meters came back with 31
+    rows, so the extra click doesn't collapse a window that already holds.
     """
     collected: dict[str, dict] = {}
     owners: dict[tuple[str, str], str] = {}
@@ -1368,6 +1390,11 @@ def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18) -> dic
     for route in pages:
         _push_route(driver, route)
         time.sleep(8)
+        if set_window:
+            # 缓冲区按到达顺序排列，dict 推导同形状后者覆盖前者；
+            # 先收首屏再点宽窗口，宽窗口若真发回来就顶掉窄的那份（行数以实测为准）
+            log.info("[meter] %s 设窗口: %s", route, set_window(driver))
+            time.sleep(6)
         recs = driver.execute_script("return window.__apiResponses || [];") or []
         echo = driver.execute_script(METER_ECHO_JS)
         if not echo:
@@ -1397,6 +1424,9 @@ def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18) -> dic
             if not echo:
                 log.warning("[meter] %s option %s (%s): no echo after pick", route, i, picked)
                 continue
+            if set_window:
+                set_window(driver)      # 换表后的窗口状态没测过，这里重新点一次再说
+                time.sleep(1.5)
             deadline = time.time() + wait
             settled: float | None = None
             keep: dict = {}
