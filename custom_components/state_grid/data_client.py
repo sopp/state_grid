@@ -343,6 +343,8 @@ class StateGridDataClient:
         # ── 增强字段：sidecar 推送来的响应缓存 {(api, 户号): (响应, 期间, 覆盖起, 覆盖止)} ──
         push_cache = {}
         push_meta = _D
+        push_pending = _N
+        push_fed = _N
 
         # ────────────────────────────────────────────
         # __init__: bilezhou 原版 + 增强字段加载
@@ -416,12 +418,17 @@ class StateGridDataClient:
                         span=(min(days),max(days)) if days else (None,None)
                         cache[(api,cons)]=(resp,period,span[0],span[1])
                 A.push_cache=cache
+                A.push_pending=_V
                 A.push_meta={'received_at':int(time.time()*1000),'items':len(cache),
                              'pushed_at':(bundle or {}).get('pushed_at'),'skipped':skipped[:8]}
-                # 数据的"新鲜时间"就是推送时间：不更新 timestamp 的话 12 小时闸门一直是开的，
-                # 缓存抽干后每 5 分钟的轮询都会退回 HTTP 取数，白烧风控额度
+                # 数据的"新鲜时间"就是推送时间：timestamp 不跟着走的话 12 小时闸门一直是开的，
+                # 缓存抽干后每 5 分钟的轮询都会退回 HTTP 取数
                 A.timestamp=int(time.time()*1000)
-                LOGGER.info('sidecar 推送入仓 %d 条（跳过 %d）',len(cache),len(skipped))
+                # 清掉上一轮留下的 need_login：refresh_data 每个电表取完余额就检查它，是 True
+                # 就 return。09-30 真机上 22:24 那轮命中日志停在第二块表的余额之后、store 没更新，
+                # 就是这个标记把整轮掐掉的（缓存里的数据本身没问题）
+                A.need_login=_N
+                LOGGER.warning('sidecar 推送入仓 %d 条（跳过 %d）',len(cache),len(skipped))
                 return len(cache)
 
         # ────────────────────────────────────────────
@@ -471,6 +478,11 @@ class StateGridDataClient:
 
                 # bilezhou 原版: 需要重新登录的错误码（不含11401）
                 if A.__need_login(code_val):
+                        if A.push_fed:
+                                # 本轮由 sidecar 供数：登录是浏览器的活，这里再自己登一次
+                                # 就是拿真实请求去撞风控，缓存里也没有这个请求的替代数据
+                                LOGGER.warning('取数未命中缓存且登录态失效(%s)，sidecar 供数模式下不再自助登录', api)
+                                return B
                         await A.__try_password_login()
                         if A.need_login is _N:return await A.__fetch(api,data)
                         if A.need_login is _V:A._show_token_notification()
@@ -540,7 +552,7 @@ class StateGridDataClient:
                         B0=A.push_cache.get(K0,_D)
                         if B0 is not _D and _push_covers(api,data,B0):
                                 A.push_cache.pop(K0,_D)
-                                LOGGER.info('命中 sidecar 推送: %s 户号=%s',api,K0[1])
+                                LOGGER.warning('命中 sidecar 推送: %s 户号=%s',api,K0[1])
                                 return B0[0]
                 R='encryptData';Q='client_secret';P='application/json;charset=UTF-8';O='Content-Type';M=header;J='client_id';D=api;A.timestamp=int(time.time()*1000);E=A.timestamp
                 if A.keyCode is _D:A.keyCode=e(32,16,2)
@@ -946,6 +958,12 @@ class StateGridDataClient:
                 # 保存原始 timestamp：__fetch 内部会更新它用于签名，
                 # 如果本次刷新中途失败（登录失败/异常），还原 timestamp 避免下次 12 小时判断错误
                 _orig_ts=C.timestamp
+                # 推送是一次性的触发器：这一轮用掉就熄灭。push_cache 里可能有本轮用不到的形状
+                # （比如还没抓到的阶梯），拿它非空当强制刷新条件的话，每 5 分钟的轮询都会被强制
+                # 走一遍取数，而取数未命中缓存就是真实 HTTP 请求
+                C.push_pending=_N
+                # 本轮由 sidecar 供数：登录态问题不该中止整轮（见 __fetch_safe 与 need_login 两处）
+                C.push_fed=bool(C.push_cache)
                 try:
                         if f:await C.__get_door_number()
                         A6=f or int(time.time()*1000)-C.timestamp>C.refresh_interval*3600*1000
@@ -954,9 +972,17 @@ class StateGridDataClient:
                         for A in C.powerUserList:
                                 A7=A[_g];C.doorAccountDict[A7]=A;await C.__get_door_balance(A)
                                 if C.need_login is _V:
-                                        # 登录失败：还原 timestamp，下次轮询还能再试
-                                        C.timestamp=_orig_ts
-                                        return
+                                        # 由 sidecar 供数时不中止整轮：后面那块表的缓存数据
+                                        # 还要落进 doorAccountDict，一 return 就整批白吃
+                                        if C.push_fed:
+                                                LOGGER.warning('登录态失效，但本轮由 sidecar 供数，继续处理后面的电表')
+                                                C.need_login=_N
+                                                C.timestamp=_orig_ts
+                                        else:
+                                                # 保存原始 timestamp：__fetch 内部会更新它，登录失败时要还原，
+                                                # 否则下次 12 小时判断会以为本轮已经取过数
+                                                C.timestamp=_orig_ts
+                                                return
                                 if _Y in A:
                                         g=catchFloat(A[_Y],'accountBalance');AB=catchFloat(A[_Y],'estiAmt');AC=catchFloat(A[_Y],'prepayBal');W=catchFloat(A[_Y],'sumMoney');AD=catchFloat(A[_Y],'historyOwe');h=A[_Y][_AK];i=''
                                         if y in A[_Y]:i=A[_Y][y]

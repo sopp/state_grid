@@ -24,7 +24,9 @@ class StateGridCoordinator(DataUpdateCoordinator):
         # - 重启场景（有缓存数据）：不强制刷新，由 refresh_data 内部 12 小时判断决定
         #   这样可以避免重启就触发 API 调用，消耗 RK001 日额度
         has_cached_data = bool(self.data_client.powerUserList)
-        push_pending = bool(self.data_client.push_cache)
+        # push_pending 由 ingest_push 点亮、refresh_data 开头熄灭，是"有一次刷新欠着"的一次性标记；
+        # 用 push_cache 非空当条件不行：里面可能有本轮用不上的形状，会让每轮都被强制刷
+        push_pending = bool(getattr(self.data_client, "push_pending", False))
         force_refresh = not has_cached_data or push_pending
         await self.data_client.refresh_data(force_refresh=force_refresh)
         return self.data_client.get_door_account()

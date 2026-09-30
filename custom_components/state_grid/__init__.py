@@ -69,7 +69,9 @@ async def _async_setup_push_webhook(hass: HomeAssistant, entry: ConfigEntry,
         webhook_id = secrets.token_hex(16)
         hass.config_entries.async_update_entry(
             entry, data={**(entry.data or {}), CONF_PUSH_WEBHOOK: webhook_id})
-        LOGGER.info("已生成 sidecar 推送地址: /api/webhook/%s", webhook_id)
+    # 每次 setup 都打一遍，日志滚没了还能去 .storage/core.config_entries 里捞。
+    # 用 warning 级：这台 HA 容器的控制台只放 WARNING 以上，info 级的地址等于没打。
+    LOGGER.warning("sidecar 推送地址: /api/webhook/%s", webhook_id)
 
     async def handle_push(hass: HomeAssistant, webhook_id: str, request: web.Request) -> web.Response:
         try:
