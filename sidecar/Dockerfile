@@ -7,7 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       chromium chromium-driver fonts-liberation fonts-wqy-zenhei ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir "selenium>=4.20" "Pillow>=10" "openai>=1.0.0"
+# 依赖只留 requirements.txt 一处真相：sgcc_sidecar 顶层就 import captcha_solver.tencent，
+# 那条链硬拉 numpy/cv2，少装一个容器会在导入期就炸（本机挡掉 numpy 实测过）。
+COPY sidecar/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt "openai>=1.0.0" && rm /tmp/requirements.txt
 
 WORKDIR /app
 # 构建上下文是整个仓库：点选验证码的解算器是集成里那一份，这边直接复用，避免两处漂移
