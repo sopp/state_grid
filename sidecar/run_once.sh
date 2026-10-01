@@ -1,5 +1,6 @@
 #!/bin/sh
-# 跑一轮：先复用浏览器里还没过期的会话（不消耗登录额度），不行才真登录。
+# 跑一轮：先走 --harvest-only（只复用 profile 里还没过期的会话，不提交登录表单），
+# 拿不到会话才真登录。
 # 退出码沿用 sgcc_sidecar.py：0 成功 / 3 登录没完成 / 5 profile 里没有可用会话 / 2 参数错。
 set -u
 
@@ -31,7 +32,7 @@ python /app/sgcc_sidecar.py --profile "$PROFILE" --account "$SGCC_ACCOUNT" \
 rc=$?
 if [ "$rc" = 0 ]; then say "主标识这一轮成功"; exit 0; fi
 
-# 3) 主标识没过去就换备用标识，只换一次：同一标识短时间内连打第 4 次历史上必吃 RK001
+# 3) 主标识没过去就换备用标识，只换一次：同一标识短时间内反复打会招来 RK001（实测过两次）
 if [ "$rc" = 3 ] && [ -n "${SGCC_EMAIL_ACCOUNT:-}" ]; then
   say "主标识登录没完成（rc=3），改用备用邮箱一次"
   python /app/sgcc_sidecar.py --profile "$PROFILE" --account "$SGCC_EMAIL_ACCOUNT" \
