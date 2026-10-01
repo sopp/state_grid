@@ -44,6 +44,30 @@ back to a full login run when they expire.
 Use a **strong, unique** password value; never put it in the command line.
 `--check` proves launch + warm-up without spending a login attempt.
 
+## Running it as a container
+`docker-compose.yml` + `Dockerfile` put the whole loop on the NAS next to HA. Build from the repo
+root (the image copies the integration's own captcha solver so there is only one copy of it):
+
+    cp sidecar/docker-compose.env.example sidecar/.env   # then fill it in, chmod 600 .env
+    docker compose -f sidecar/docker-compose.yml up -d --build
+    docker compose -f sidecar/docker-compose.yml exec sgcc-sidecar /app/run_once.sh   # 手动跑一轮
+
+`run_once.sh` does one round: reuse the profile's live session if it still works (costs no login
+attempt), otherwise log in with `--captcha llm`, and if that identifier is refused it tries
+`SGCC_EMAIL_ACCOUNT` once — it never retries the same identifier back to back, because the block
+follows attempt density rather than the clock. `run_daily.sh` (the container default CMD) runs it
+at `SGCC_RUN_AT`, retries once after `SGCC_RETRY_MIN` minutes on failure, then waits for the next
+day.
+
+`/data` holds the Chrome profile, the last harvest and the per-run logs. That profile *is* the
+browser identity (瑞数/TDID/`TDC_itoken` live in it), so deleting it means building a new one with
+real login attempts — keep the volume.
+
+Known gaps this loop does not fill: the ladder endpoint (`c04/f03`) is not reachable from any page
+we have found, and per-month daily backfill is not harvested either. Those requests fall through to
+the integration's normal path, and in push-fed mode the integration no longer logs in by itself, so
+they simply stay empty instead of burning quota.
+
 ## Vendored code and licence
 `captcha_solver/` is copied unmodified from https://github.com/renxiaoyaoo/ha-95598
 (Apache-2.0, see `LICENSE.ha-95598`). It is used under that licence and unmodified except for

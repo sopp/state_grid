@@ -19,3 +19,4 @@ sidecar/*.log
 sidecar/*.csv
 
 _scratch/
+trace/

@@ -1,0 +1,18 @@
+services:
+  sgcc-sidecar:
+    build:
+      # 上下文是整个仓库：解算器要用集成里那一份，避免两处代码漂移
+      context: ..
+      dockerfile: sidecar/Dockerfile
+    image: sgcc-sidecar:local
+    container_name: sgcc-sidecar
+    # profile 就是这个浏览器实例的身份（瑞数/TDID/TDC_itoken 都在里面），重建容器不能重建它
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+    restart: unless-stopped
+    # headless=new，不需要 X；给点共享内存，否则 Chrome 在容器里会崩
+    shm_size: 1g

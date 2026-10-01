@@ -116,6 +116,21 @@ HARVEST_JS = r"""
           const rec = { at: Date.now(), keys: keys, value: out,
                         url: window.__lastApiUrl || null, href: location.pathname };
           window.__apiResponses.push(rec);
+          // window.* 会在跳转时清空，而 f06/getWebToken 就发生在登录页那个 document 里，
+          // 等 SPA 跳到 /my95598 再读就什么都没了 —— 凭证落到 sessionStorage，同标签页跳转活得住
+          try {
+            const d = out.data;
+            const cand = { at: Date.now(),
+                           token: (d && d.bizrt && d.bizrt.token) || out.token || null,
+                           access_token: out.access_token || (d && d.access_token) || null,
+                           refresh_token: out.refresh_token || (d && d.refresh_token) || null,
+                           userInfo: (d && d.bizrt && Array.isArray(d.bizrt.userInfo)
+                                       && d.bizrt.userInfo[0]) || null };
+            if (cand.token || cand.access_token) {
+              const c = JSON.parse(sessionStorage.getItem('__cred') || '[]');
+              if (c.length < 40) { c.push(cand); sessionStorage.setItem('__cred', JSON.stringify(c)); }
+            }
+          } catch (e) {}
           sink({ at: rec.at, url: rec.url, href: rec.href, keys: keys,
                  code: out.code, msg: out.msg || out.message,
                  errcode: out.errcode, dkeys: out.data && typeof out.data === 'object'
@@ -290,6 +305,10 @@ def read_blocked_f06(driver) -> list[dict]:
 def cached_chromedriver() -> str:
     """Selenium Manager phones home for known-good-versions on every launch and only after that
     fails falls back to the cache -- a multi-minute stall per run. Use the cached binary directly."""
+    # 容器里是 apt 装的 /usr/bin/chromedriver，不在 selenium 缓存目录里，用这个变量指过去
+    pinned = os.environ.get("SGCC_DRIVER", "")
+    if pinned:
+        return pinned
     roots = [Path.home() / ".cache" / "selenium" / "chromedriver"]
     if os.environ.get("LOCALAPPDATA"):
         roots.insert(0, Path(os.environ["LOCALAPPDATA"]) / "selenium" / "chromedriver")
@@ -302,10 +321,11 @@ def cached_chromedriver() -> str:
     return ""
 
 
-# ChromeDriver injects these on window/document before any page script runs; 瑞数 and every
-# other anti-bot read them first, which is how our browser got classified as a bot while the
-# user's own Chrome on the same account and IP was served a real captcha. Registered as a
-# document-start script it runs after chromedriver's own injection, so deleting works.
+# ChromeDriver injects these on window/document before any page scripts run. We delete them: at
+# the time this was added, this browser was refused while the user's own Chrome on the same account
+# and IP was served a real challenge. Which signal the site actually weights is unproven (the
+# measured cause turned out to be interaction telemetry), so the deletion is kept as cheap
+# insurance. Registered as a document-start script it runs after chromedriver's own injection.
 STEALTH_JS = r"""
 (() => {
   const RE = /(^|_)\$*_?cdc_/i;
@@ -326,6 +346,10 @@ def make_driver(profile: Path, headless: bool, proxy: str = "") -> webdriver.Chr
     profile = Path(profile).expanduser().resolve()
     profile.mkdir(parents=True, exist_ok=True)
     opts = Options()
+    # Debian 的 chromium 不叫 chrome，容器里得显式指二进制；不设时行为跟以前一样
+    chrome_bin = os.environ.get("SGCC_CHROME", "")
+    if chrome_bin:
+        opts.binary_location = chrome_bin
     if headless:
         opts.add_argument("--headless=new")
     opts.add_argument(f"--user-data-dir={profile}")
@@ -840,7 +864,13 @@ def llm_solve_captcha(driver, handler) -> bool:
         log.error("[llm] cannot import click_captcha_solver: %s", exc)
         return False
 
+    # SGCC_LLM 是一段 JSON；容器/.env 里写三个扁平变量更好读，两种都认，扁平的优先
     cfg = json.loads(os.environ.get("SGCC_LLM", "{}"))
+    if os.environ.get("SGCC_LLM_KEY"):
+        cfg = {"api_key": os.environ["SGCC_LLM_KEY"],
+               "base_url": os.environ.get("SGCC_LLM_BASE",
+                                          cfg.get("base_url", "https://ark.cn-beijing.volces.com/api/v3")),
+               "model": os.environ.get("SGCC_LLM_MODEL", cfg.get("model", ""))}
     if not (cfg.get("api_key") and cfg.get("model")):
         log.error("[llm] set SGCC_LLM='{\"api_key\":...,\"base_url\":...,\"model\":...}'")
         return False
@@ -1117,7 +1147,19 @@ def export_browser_auth(driver, out: Path) -> dict:
         got = driver.execute_script(
             "const out = {auth: window.__auth || {hdr: [], body: []},"
             "             resp: (window.__apiResponses || []).slice(-60),"
+            "             cred: [],"
             "             login: {token: null, userInfo: null, access_token: null}};"
+            "try { out.cred = JSON.parse(sessionStorage.getItem('__cred') || '[]'); } catch (e) {}"
+            # userInfo 不能后到的覆盖先到的：登录响应的 bizrt.userInfo[0] 带 provinceId/orgNo，
+            # 另一个端点回的同名字段只有 email/mobile 那套账号资料。data_client 组装请求时要读
+            # userInfo 里的省份/机构字段，所以固定挑带 provinceId 的那一份。
+            "for (const c of out.cred) {"
+            "  if (c.token) out.login.token = c.token;"
+            "  if (c.access_token) out.login.access_token = c.access_token;"
+            "  if (c.userInfo) {"
+            "    if (!out.login.userInfo || c.userInfo.provinceId) out.login.userInfo = c.userInfo;"
+            "  }"
+            "}"
             "for (const r of (window.__apiResponses || [])) {"
             "  const v = r && r.value; if (!v || typeof v !== 'object') continue;"
             "  const d = v.data;"
