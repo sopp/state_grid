@@ -68,6 +68,23 @@ we have found, and per-month daily backfill is not harvested either. Those reque
 the integration's normal path, and in push-fed mode the integration no longer logs in by itself, so
 they simply stay empty instead of burning quota.
 
+## Where the captcha LLM config comes from
+Three places, deliberately separate:
+
+- **HA integration** (it solves its own logins): UI 配置项 `llm_api_key` / `llm_base_url` / `llm_model`,
+  stored in `.storage/state_grid.config`.
+- **sidecar on a workstation**: `SGCC_LLM_KEY/BASE/MODEL` (or one `SGCC_LLM` JSON blob).
+- **sidecar in the container**: same three vars, from `.env`.
+
+Set `SGCC_HA_STORE=/path/to/.storage/state_grid.config` (plus a `:ro` mount of HA's config dir)
+and the sidecar re-reads those three keys from HA's store at the start of every round and prefers
+them - so changing the model in the HA UI is enough. It logs one line when the store config
+differs from its own, and falls back to the env vars if the store file is missing or has no key.
+
+Before turning that on, measure it: on the same 7 labeled captcha samples the store's endpoint
+scored 4/7 while the `.env` endpoint scored 5/7, so "point at the store" is not automatically an
+upgrade. Align the two first, then switch.
+
 ## Vendored code and licence
 `captcha_solver/` is copied unmodified from https://github.com/renxiaoyaoo/ha-95598
 (Apache-2.0, see `LICENSE.ha-95598`). It is used under that licence and unmodified except for

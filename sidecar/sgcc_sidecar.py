@@ -854,6 +854,31 @@ def capture_challenge(driver, handler):
     return strip_el, bg_el, strip, bg
 
 
+def ha_store_llm_cfg() -> dict:
+    """读 HA store 里那三项 LLM 配置（SGCC_HA_STORE 指过来时生效）。
+
+    目的是"在 HA 界面里改一次就够"：sidecar 每轮开工前重读一遍，不必回头改 .env。
+    只取这三个键；同一份文件里还有账号与密码摘要，一律不读、不打印。
+    """
+    path = os.environ.get("SGCC_HA_STORE", "")
+    if not path:
+        return {}
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = raw.get("data", raw)
+        key = str(data.get("llm_api_key") or "")
+        model = str(data.get("llm_model") or "")
+        if not (key and model):
+            log.warning("[llm] %s 里没有 llm_api_key/llm_model，沿用环境变量那套", path)
+            return {}
+        return {"api_key": key, "model": model,
+                "base_url": str(data.get("llm_base_url")
+                                or "https://ark.cn-beijing.volces.com/api/v3")}
+    except Exception as exc:
+        log.warning("[llm] 读 HA store 失败(%s)，沿用环境变量那套", type(exc).__name__)
+        return {}
+
+
 def llm_solve_captcha(driver, handler) -> bool:
     """Answer the popup with the integration's own LLM solver (same code HA will run)."""
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "custom_components" / "state_grid"))
@@ -871,6 +896,15 @@ def llm_solve_captcha(driver, handler) -> bool:
                "base_url": os.environ.get("SGCC_LLM_BASE",
                                           cfg.get("base_url", "https://ark.cn-beijing.volces.com/api/v3")),
                "model": os.environ.get("SGCC_LLM_MODEL", cfg.get("model", ""))}
+    # 配了 SGCC_HA_STORE 就以 HA 里的为准：用户在界面上改完不必再动 sidecar 的配置
+    store_cfg = ha_store_llm_cfg()
+    if store_cfg:
+        if (store_cfg.get("api_key"), store_cfg.get("base_url"), store_cfg.get("model")) != \
+                (cfg.get("api_key"), cfg.get("base_url"), cfg.get("model")):
+            log.warning("[llm] 用 HA store 那套（key 长度=%d model=%r base 长度=%d），"
+                        "与本地配置不同", len(store_cfg["api_key"]), store_cfg["model"],
+                        len(store_cfg["base_url"]))
+        cfg = store_cfg
     if not (cfg.get("api_key") and cfg.get("model")):
         log.error("[llm] set SGCC_LLM='{\"api_key\":...,\"base_url\":...,\"model\":...}'")
         return False
