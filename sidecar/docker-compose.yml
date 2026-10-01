@@ -1,7 +1,9 @@
 services:
   sgcc-sidecar:
     build:
-      # 上下文是整个仓库：解算器要用集成里那一份，避免两处代码漂移
+      # 仓库里这份按"整仓为上下文"写（context: ..）。NAS 上不放 git 仓库，实际用的是
+      # /mnt/scsi0.1-1/Configs/sgcc-sidecar/docker-compose.yml，那份把 context 换成 ./src，
+      # 目录布局一致：src/sidecar/Dockerfile + src/custom_components/state_grid/click_captcha_solver.py
       context: ..
       dockerfile: sidecar/Dockerfile
     image: sgcc-sidecar:local
