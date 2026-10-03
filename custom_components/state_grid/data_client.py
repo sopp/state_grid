@@ -395,6 +395,9 @@ class StateGridDataClient:
                 """把 sidecar 推来的 {items:[{shape,consNo,response}]} 装进一次性缓存。
 
                 每次推送整包替换：跨代残留会被下一轮误当成新数据消费。
+                同一个 (接口, 户号) 允许挂多份载荷：网页在同一个接口上是**按年/按月问很多次**的
+                （c24/f01 先问近 40 天再逐月回补、c01/f02 先问去年再问今年），一键只存一份的话
+                主请求吃完就没有下一份了；命中时由 _push_covers 按期间和覆盖区间挑。
                 """
                 items=(bundle or {}).get('items') or []
                 cache={};skipped=[]
@@ -416,10 +419,11 @@ class StateGridDataClient:
                         period=str(it.get('period') or year or
                                    (list(years)[0] if len(years)==1 else '')).strip() or None
                         span=(min(days),max(days)) if days else (None,None)
-                        cache[(api,cons)]=(resp,period,span[0],span[1])
+                        cache.setdefault((api,cons),[]).append((resp,period,span[0],span[1]))
                 A.push_cache=cache
                 A.push_pending=_V
-                A.push_meta={'received_at':int(time.time()*1000),'items':len(cache),
+                n=sum(len(v) for v in cache.values())
+                A.push_meta={'received_at':int(time.time()*1000),'items':n,
                              'pushed_at':(bundle or {}).get('pushed_at'),'skipped':skipped[:8]}
                 # 数据的"新鲜时间"就是推送时间：timestamp 不跟着走的话 12 小时闸门一直是开的，
                 # 缓存抽干后每 5 分钟的轮询都会退回 HTTP 取数
@@ -428,8 +432,8 @@ class StateGridDataClient:
                 # 就 return。09-30 真机上 22:24 那轮命中日志停在第二块表的余额之后、store 没更新，
                 # 就是这个标记把整轮掐掉的（缓存里的数据本身没问题）
                 A.need_login=_N
-                LOGGER.warning('sidecar 推送入仓 %d 条（跳过 %d）',len(cache),len(skipped))
-                return len(cache)
+                LOGGER.warning('sidecar 推送入仓 %d 份（%d 个键，跳过 %d）',n,len(cache),len(skipped))
+                return n
 
         # ────────────────────────────────────────────
         # 以下为 bilezhou 原版方法（不变）
@@ -549,15 +553,18 @@ class StateGridDataClient:
                 # 同一份载荷不该同时喂给两个不同的请求（例如日电量的近 40 天窗口和补月的窗口）。
                 if A.push_cache:
                         K0=_push_hit_key(api,data)
-                        B0=A.push_cache.get(K0,_D)
-                        if B0 is not _D and _push_covers(api,data,B0):
-                                A.push_cache.pop(K0,_D)
-                                LOGGER.warning('命中 sidecar 推送: %s 户号=%s',api,K0[1])
-                                return B0[0]
-                        # 没命中就留下判据：是键对不上，还是键对上了但期间/区间不够。
+                        Q0=A.push_cache.get(K0) or []
+                        for i in range(len(Q0)):
+                                # 同一个键下挂着好几份（按月/按年的请求各要一份），按灌入顺序挑第一份够覆盖的
+                                if _push_covers(api,data,Q0[i]):
+                                        B0=Q0.pop(i)
+                                        if not Q0:A.push_cache.pop(K0,_D)
+                                        LOGGER.warning('命中 sidecar 推送: %s 户号=%s',api,K0[1])
+                                        return B0[0]
+                        # 没命中就留下判据：是键对不上，还是键对上了但期间/区间都不够。
                         # 少了这一行，"灌了 7 条却只吃到 1 条"这种现场只能靠猜。
                         LOGGER.warning('推送缓存未命中: %s 户号=%s 原因=%s 现有=%s',api,K0[1],
-                                       '覆盖不足' if B0 is not _D else '无此键',
+                                       '覆盖不足' if Q0 else '无此键',
                                        sorted('%s|%s' % ('/'.join(k[0].split('/')[-2:]), k[1])
                                               for k in A.push_cache))
                 R='encryptData';Q='client_secret';P='application/json;charset=UTF-8';O='Content-Type';M=header;J='client_id';D=api;A.timestamp=int(time.time()*1000);E=A.timestamp

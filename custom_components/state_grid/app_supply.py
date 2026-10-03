@@ -19,6 +19,7 @@ from .utils.logger import LOGGER
 DAILY_LAG_DAYS = 1          # 网页主请求问的是"昨天"为止的近 40 天，不是今天
 DAILY_DAYS = 40             # 与 __get_door_daily_bill 的 timedelta(days=40) 对齐
 FILL_MIN_INTERVAL_S = 3600   # 协调器每 5 分钟一轮，App 取数没必要跟着跑
+MONTH_BACKFILL_PER_FILL = 6  # 按月回补一次最多补几个月，别在一轮里把 APP 打爆
 _last_fill = 0.0
 _DAILY_VALUE_KEYS = ("dayElePq", "thisPPq", "thisVPq", "thisNPq", "thisTPq")
 
@@ -30,19 +31,38 @@ def _daily_response(rows: list[dict[str, Any]], end_date: date) -> dict[str, Any
     而解析器本来就会跳过开头那几行没有数值的行（`refresh_data` 里数 `Y` 的那个循环），
     所以留着才对得上、也算得对。App 有时只返回到最后一个出数的日子，那就把它和请求止
     之间的空缺按同样格式补成 "-" 行——补的是"这几天还没公布"，不是编造电量。
+    超出请求止的行要丢掉：多一天就把覆盖止顶到请求止之外，反而一份都吃不到。
     """
-    keep = [r for r in rows if r.get("day")]
-    keep.sort(key=lambda r: str(r["day"]), reverse=True)
+    keep = []
+    for r in rows:
+        day = str(r.get("day") or "")
+        if not day:
+            continue
+        d = datetime.strptime(day.replace("-", ""), "%Y%m%d").date()
+        if d <= end_date:
+            keep.append((d, r))
+    keep.sort(key=lambda x: x[0], reverse=True)
     if not keep:
         return {"code": "1", "data": {"sevenEleList": []}}
-    first_day = str(keep[0]["day"])
-    fmt = "%Y-%m-%d" if "-" in first_day else "%Y%m%d"
-    last = datetime.strptime(first_day.replace("-", ""), "%Y%m%d").date()
+    fmt = "%Y-%m-%d" if "-" in str(keep[0][1]["day"]) else "%Y%m%d"
     pad = []
-    for i in range((end_date - last).days, 0, -1):
+    for i in range((end_date - keep[0][0]).days, 0, -1):
         d = end_date - timedelta(days=i - 1)
         pad.append({"day": d.strftime(fmt), **{k: "-" for k in _DAILY_VALUE_KEYS}})
-    return {"code": "1", "data": {"sevenEleList": pad + keep}}
+    return {"code": "1", "data": {"sevenEleList": pad + [r for _, r in keep]}}
+
+
+def _month_window(ym: str) -> tuple[int, date, date]:
+    """'202609' → (2026, 2026-09-01, 2026-09-30)，与 get_month_date_range 同口径。"""
+    y, m = int(ym[:4]), int(ym[4:6])
+    start = date(y, m, 1)
+    end = (date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)) - timedelta(days=1)
+    return y, start, end
+
+
+def _account_rows(client, cons: str) -> list[dict[str, Any]]:
+    acct = (getattr(client, "doorAccountDict", None) or {}).get(cons) or {}
+    return [r for r in (acct.get("year_bill_list") or []) if isinstance(r, dict)]
 
 
 def _monthly_response(app_data: dict[str, Any], year: int) -> dict[str, Any]:
@@ -93,7 +113,10 @@ def _meter_list_response(raw_accounts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 async def async_fill_cache(hass, client) -> int:
-    """登录 App、取三样数据、灌缓存。返回入库条数；0 表示这轮不供应（保持原路径）。"""
+    """登录 App、取日电量/月度/余额（含按年、按月的第二份窗口），灌缓存。
+
+    返回入库份数；0 表示这轮不供应（保持原路径）。
+    """
     global _last_fill
     if time.time() - _last_fill < FILL_MIN_INTERVAL_S:
         return 0
@@ -113,12 +136,14 @@ async def async_fill_cache(hass, client) -> int:
     items: list[dict[str, Any]] = [{
         "shape": "meter_list", "consNo": None,
         "response": _meter_list_response(ch.raw_accounts)}]
+    main_ok = 0
     for a in ch.accounts:
         daily = await ch.async_daily(a, start, end)
         ddaily = (daily or {}).get("data")
         resp = _daily_response((ddaily or {}).get("sevenEleList") or [], end)
         rows = resp["data"]["sevenEleList"]
         if rows:
+            main_ok += 1
             LOGGER.warning("App 日电量 %s：%d 行，末行 %s=%s",
                            a.cons_no_src, len(rows), rows[0]["day"], rows[0].get("dayElePq"))
             items.append({"shape": "daily_ele", "consNo": a.cons_no_src,
@@ -134,13 +159,34 @@ async def async_fill_cache(hass, client) -> int:
             items.append({"shape": "monthly_ele", "consNo": a.cons_no_src,
                           "period": str(today.year),
                           "response": _monthly_response(dmonthly, today.year)})
+        # 网页问去年那份年度账单只在合并出来的月行不足 12 个时发生（refresh_data 里那句
+        # len(A['year_bill_list'])<12），凑满了就不再问，这里也跟着停，免得白打一次
+        rows_all = _account_rows(client, a.cons_no_src)
+        if len(rows_all) < 12:
+            last = await ch.async_monthly(a, today.year - 1)
+            dlast = (last or {}).get("data")
+            if isinstance(dlast, dict) and dlast.get("list"):
+                items.append({"shape": "monthly_ele", "consNo": a.cons_no_src,
+                              "period": str(today.year - 1),
+                              "response": _monthly_response(dlast, today.year - 1)})
+        # 按月回补：网页对每个还没有 daily_ele 的月行都会用同一个 c24/f01 再问一次整月窗口。
+        # 补成功的月行会写上 daily_ele，之后不再问，所以这笔开销是有界的、只在未来头几轮。
+        for ym in sorted({r["month"] for r in rows_all
+                          if r.get("month") and not r.get("daily_ele")},
+                         reverse=True)[:MONTH_BACKFILL_PER_FILL]:
+            y, ms, me = _month_window(ym)
+            mdaily = await ch.async_daily(a, ms, me)
+            mresp = _daily_response(((mdaily or {}).get("data") or {}).get("sevenEleList") or [], me)
+            if mresp["data"]["sevenEleList"]:
+                items.append({"shape": "daily_ele", "consNo": a.cons_no_src,
+                              "period": str(y), "response": mresp})
         balance = await ch.async_balance(a)
         dbalance = (balance or {}).get("data")
         if isinstance(dbalance, dict) and dbalance.get("list"):
             items.append({"shape": "balance", "consNo": a.cons_no_src,
                           "response": _balance_response(dbalance)})
     daily_items = [i for i in items if i["shape"] == "daily_ele"]
-    if not daily_items:
+    if not main_ok:
         # 只剩 meter_list 也没法算电量，且 ingest_push 是整包替换，
         # 这时候灌进去反而会把 sidecar 那份好数据顶掉，所以直接不供应。
         LOGGER.warning("App 通道没取到日电量，本轮不灌缓存（保留 sidecar/网页路径）")
@@ -148,5 +194,6 @@ async def async_fill_cache(hass, client) -> int:
     count = await client.ingest_push({
         "items": items,
         "pushed_at": datetime.now(CHINA).isoformat(timespec="seconds")})
-    LOGGER.warning("App 通道入仓 %d 条（日电量 %d 块表）", count, len(daily_items))
+    LOGGER.warning("App 通道入仓 %d 份（日电量 %d 份，主窗口 %d 块表）",
+                   count, len(daily_items), main_ok)
     return count
