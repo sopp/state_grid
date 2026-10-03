@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import timedelta
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from . import app_supply
 from .data_client import StateGridDataClient
 from .const import DOMAIN
 from .utils.logger import LOGGER
@@ -23,6 +24,14 @@ class StateGridCoordinator(DataUpdateCoordinator):
         # - sidecar 刚推来一批浏览器抓的响应：必须刷新一次，不然这批数据没人消费就过期了
         # - 重启场景（有缓存数据）：不强制刷新，由 refresh_data 内部 12 小时判断决定
         #   这样可以避免重启就触发 API 调用，消耗 RK001 日额度
+        # App 供数要在 force_refresh 之前跑：它刚灌进缓存的这批数据，就是本轮要消费的，
+        # 放在后面算的话这一轮永远 force_refresh=False，要等 12 小时闸门开才被取用。
+        # App 通道自己判断令牌是否可用；它拿不到日电量时一个字节都不灌，
+        # 所以 sidecar 那条路随时能接管，不需要开关。
+        try:
+            await app_supply.async_fill_cache(self.hass, self.data_client)
+        except Exception as exc:
+            LOGGER.warning("App 通道本轮不可用：%s %s", type(exc).__name__, str(exc)[:120])
         has_cached_data = bool(self.data_client.powerUserList)
         # push_pending 由 ingest_push 点亮、refresh_data 开头熄灭，是"有一次刷新欠着"的一次性标记；
         # 用 push_cache 非空当条件不行：里面可能有本轮用不上的形状，会让每轮都被强制刷
