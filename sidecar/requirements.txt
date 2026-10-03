@@ -1,4 +1,0 @@
-selenium>=4.20
-numpy>=1.26
-opencv-python-headless>=4.9
-Pillow>=10
