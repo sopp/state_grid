@@ -1,0 +1,32 @@
+MIT License
+
+Copyright (c) 2026 tiejiang29
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+本仓库另含以下第三方来源，许可证随文件一同保留：
+
+- `custom_components/state_grid/data_client.py` 的取数与解析部分源自
+  [bilezhou/state_grid](https://github.com/bilezhou/state_grid)（MIT），
+  许可证见 `custom_components/state_grid/LICENSE.hass-state-grid`。
+- `custom_components/state_grid/turing/` 为本地生成设备令牌所需的
+  TuringFD 实现，同样来自上述 MIT 仓库；本仓库未使用任何第三方加密代理服务，
+  登录与取数全部直连国家电网网关。

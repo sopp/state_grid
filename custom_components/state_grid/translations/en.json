@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "State Grid - Account sign-in",
+        "description": "The App channel is tried first (no captcha, no LLM configuration needed).\n\n{fallback_hint}",
+        "data": {
+          "phone": "Phone number",
+          "email": "Backup e-mail (web fallback rate-limit)",
+          "password": "Password",
+          "llm_api_key": "LLM API key (optional)",
+          "llm_base_url": "LLM base URL",
+          "llm_model": "LLM model ID (optional)"
+        },
+        "data_description": {
+          "llm_api_key": "Only needed for the web sign-in fallback, used to solve captchas",
+          "llm_model": "Model ID (e.g. doubao-seed-2-0-pro-260215); only needed for the web sign-in fallback"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Wrong account or password",
+      "invalid_phone": "Enter a valid phone number",
+      "invalid_email": "Enter a valid e-mail address",
+      "missing_llm_key": "The App channel did not sign in, so the web fallback needs an LLM API key (captcha solving)",
+      "missing_llm_model": "The App channel did not sign in, so the web fallback needs an LLM model ID (captcha solving)",
+      "cannot_connect": "Cannot reach the State Grid servers",
+      "rk001_rate_limit": "Daily sign-in quota exhausted (RK001 rate limit). Try again after 00:00"
+    },
+    "abort": {
+      "single_instance_allowed": "A State Grid instance already exists. Remove it before adding another"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "State Grid - Options",
+        "description": "Change the LLM configuration (web fallback only), the backup e-mail and the refresh interval. Leave a field empty to keep the current value. To update the State Grid password, fill in the \"new password\" field - it is verified once on submit.",
+        "data": {
+          "llm_api_key": "LLM API key (empty keeps current)",
+          "llm_base_url": "LLM base URL",
+          "llm_model": "LLM model ID",
+          "email_account": "Backup e-mail (web fallback rate-limit)",
+          "refresh_interval": "Refresh interval (hours, 12-48)",
+          "new_password": "New password (empty keeps current; filling it triggers one sign-in attempt)"
+        },
+        "data_description": {
+          "llm_model": "Model ID (e.g. doubao-seed-2-0-pro-260215); leave empty to use only the App channel"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The new password was rejected. Check the password",
+      "cannot_connect": "Cannot reach the State Grid servers",
+      "no_account": "No running integration instance found. Try again or restart Home Assistant",
+      "rk001_cooldown_cannot_verify": "Currently inside the RK001 cooldown, so the new password cannot be verified. Try again after 00:00",
+      "rk001_rate_limit": "Daily sign-in quota exhausted (RK001 rate limit). Try again after 00:00"
+    }
+  }
+}
