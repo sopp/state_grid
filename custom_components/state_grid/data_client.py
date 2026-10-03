@@ -261,6 +261,10 @@ def get_month_date_range(date_str):
 class StateGridDataClient:
         hass=_D;coordinator=_D;dataVersion=_D;powerUserList=_D;doorAccountDict={}
         timestamp=int(time.time()*1000);refresh_interval=12;is_debug=_N;account=_D;password=_D
+        # userInfo / token 已经没有生产者了（网页登录删掉的），但下面几个请求载荷的构造里
+        # 还直接下标读它们。载荷现在只当缓存键用（匹配看户号/期间/日期区间），所以留占位：
+        # 不给就会在第一次取数时 AttributeError 把整轮炸掉——23:25 在 NAS 上实测到
+        userInfo=_D;token=_D
 
         # ── 推送缓存：App 通道与 sidecar 都往这里灌 {(api, 户号): [(响应, 期间, 覆盖起, 覆盖止), …]} ──
         push_cache = {}
