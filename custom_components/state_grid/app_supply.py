@@ -61,8 +61,10 @@ def _month_window(ym: str) -> tuple[int, date, date]:
 
 
 def _account_rows(client, cons: str) -> list[dict[str, Any]]:
+    """网页那个月行集合：键是 `month_bill_list`（跨年合并的那一份），不是 `year_bill_list`
+    ——后者是 `refresh_data` 结尾按当年筛出来的子集，拿它当依据会漏掉去年的月份。"""
     acct = (getattr(client, "doorAccountDict", None) or {}).get(cons) or {}
-    return [r for r in (acct.get("year_bill_list") or []) if isinstance(r, dict)]
+    return [r for r in (acct.get("month_bill_list") or []) if isinstance(r, dict)]
 
 
 def _monthly_response(app_data: dict[str, Any], year: int) -> dict[str, Any]:
@@ -160,7 +162,7 @@ async def async_fill_cache(hass, client) -> int:
                           "period": str(today.year),
                           "response": _monthly_response(dmonthly, today.year)})
         # 网页问去年那份年度账单只在合并出来的月行不足 12 个时发生（refresh_data 里那句
-        # len(A['year_bill_list'])<12），凑满了就不再问，这里也跟着停，免得白打一次
+        # len(A['month_bill_list'])<12），凑满了就不再问，这里也跟着停，免得白打一次
         rows_all = _account_rows(client, a.cons_no_src)
         if len(rows_all) < 12:
             last = await ch.async_monthly(a, today.year - 1)
