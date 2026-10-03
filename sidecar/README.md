@@ -68,22 +68,30 @@ we have found, and per-month daily backfill is not harvested either. Those reque
 the integration's normal path, and in push-fed mode the integration no longer logs in by itself, so
 they simply stay empty instead of burning quota.
 
-## Where the captcha LLM config comes from
+## Where the captcha LLM config and the login identifiers come from
 Three places, deliberately separate:
 
-- **HA integration** (it solves its own logins): UI 配置项 `llm_api_key` / `llm_base_url` / `llm_model`,
-  stored in `.storage/state_grid.config`.
-- **sidecar on a workstation**: `SGCC_LLM_KEY/BASE/MODEL` (or one `SGCC_LLM` JSON blob).
-- **sidecar in the container**: same three vars, from `.env`.
+- **HA integration** (it solves its own logins): UI 配置项 `llm_api_key` / `llm_base_url` / `llm_model`
+  plus `account` / `email_account`, stored in `.storage/state_grid.config`.
+- **sidecar on a workstation**: `SGCC_LLM_KEY/BASE/MODEL` (or one `SGCC_LLM` JSON blob) and
+  `SGCC_ACCOUNT` / `SGCC_EMAIL_ACCOUNT`.
+- **sidecar in the container**: same vars, from `.env`.
 
-Set `SGCC_HA_STORE=/path/to/.storage/state_grid.config` (plus a `:ro` mount of HA's config dir)
-and the sidecar re-reads those three keys from HA's store at the start of every round and prefers
-them - so changing the model in the HA UI is enough. It logs one line when the store config
-differs from its own, and falls back to the env vars if the store file is missing or has no key.
+Set `SGCC_HA_STORE=/ha-config/.storage/state_grid.config` (plus a `:ro` mount of HA's config
+**directory**, not of that file — HA rewrites `.storage` as create-then-rename, so binding the file
+itself would pin the container to a stale inode) and the sidecar prefers what HA has for those keys:
+the LLM config is re-read at the start of every round, and `run_once.sh` takes its primary and
+fallback identifiers from `sgcc_sidecar.py --identifiers`. Both log lengths only, never values, and
+fall back to the env vars when the store file is missing or has no such key.
 
-Before turning that on, measure it: on the same 7 labeled captcha samples the store's endpoint
-scored 4/7 while the `.env` endpoint scored 5/7, so "point at the store" is not automatically an
-upgrade. Align the two first, then switch.
+**The password is the one thing that cannot come from the store.** Measured in the live store:
+`password` is 32 uppercase hex characters — an MD5 digest — while the browser form needs the
+plaintext (every round logs `pwLen=10`). Typing the digest into the field makes the SPA hash it a
+second time, which is just a wrong password. So `SGCC_PASSWORD` stays in `.env`.
+
+Both sides now carry the same validated pair (`.../api/plan/v3` + `doubao-seed-2.1-lite`): written
+into all three HA locations on 2026-10-01, 7/7 captcha samples returned all three points on it, and
+the same config solved the live challenge unattended on 2026-10-02 07:11.
 
 ## Vendored code and licence
 `captcha_solver/` is copied unmodified from https://github.com/renxiaoyaoo/ha-95598

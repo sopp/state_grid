@@ -11,11 +11,13 @@ services:
     # profile 就是这个浏览器实例的身份（瑞数/TDID/TDC_itoken 都在里面），重建容器不能重建它
     volumes:
       - ./data:/data
-      # 想让"在 HA 界面里改一次 LLM 配置就生效"，去掉下面这行注释挂载，并在 .env 里设
-      # SGCC_HA_STORE=/ha-config/.storage/state_grid.config：sidecar 每轮开工前只读那三个
-      # llm_* 键，读到就用它并打一行日志说明换了哪套。
-      # 打开前注意：同批 7 张样本实测这两套是 4/7 与 5/7（真值是我手读坐标标的，绝对值不可信，
-      # 但同一把尺子下两车道结果确实不同），先把 UI 里的 llm_base_url/llm_model 填成验证过的那对。
+      # 想让"在 HA 界面里改一次就生效"，去掉下面这行注释挂载，并在 .env 里设
+      # SGCC_HA_STORE=/ha-config/.storage/state_grid.config：sidecar 每轮开工前只读那几个键
+      # （llm_api_key/llm_base_url/llm_model + account/email_account），读到就以它为准并打一行日志；
+      # 只打长度不打值。必须挂**目录**而不是那个文件——HA 写 .storage 是新建再改名，绑文件会把
+      # 容器钉在旧 inode 上，之后 HA 改多少遍容器里读到的都是老的。
+      # 密码不在其中：实测 store 里的 password 是 32 位大写 md5 摘要，而登录框要明文（pwLen=10），
+      # 填摘要等于密码错误，所以 SGCC_PASSWORD 继续只从 .env 来。
       # - /mnt/scsi0.1-1/Configs/HomeAssistant:/ha-config:ro
     env_file:
       - .env

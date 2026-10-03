@@ -52,31 +52,6 @@ from captcha_solver.tencent import TencentCaptchaHandler
 BASE = os.environ.get("SGCC_BASE", "https://www.95598.cn")
 LOGIN_URL = BASE + "/osgweb/login"
 HOME_URL = BASE + "/osgweb/my95598"
-def detect_chrome_ua() -> str:
-    """Build a UA that matches the installed Chrome's real major version.
-
-    Overriding the UA with a *different* major than the browser's own sec-ch-ua client hints
-    is a self-inflicted tamper signal: Chrome 153 advertising "Chrome/131" in the UA while the
-    hints say 153 got us an instant f06 rejection, whereas a matching UA reached a real captcha
-    challenge. Headless also reports "HeadlessChrome", so the override is still required.
-    """
-    ver = None
-    for base in (Path(r"C:\Program Files\Google\Chrome\Application"),
-                 Path(r"C:\Program Files (x86)\Google\Chrome\Application")):
-        if base.is_dir():
-            for child in sorted(base.iterdir(), reverse=True):
-                if child.is_dir() and child.name[0].isdigit():
-                    ver = child.name
-                    break
-        if ver:
-            break
-    if not ver:
-        ver = os.environ.get("SGCC_CHROME_VERSION", "153.0.0.0")
-    return (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            f"(KHTML, like Gecko) Chrome/{ver} Safari/537.36")
-
-
-UA = detect_chrome_ua()
 CAPTCHA_APPID = "190586614"          # aid seen on the live login page
 PASSWORD_TAB = '//*[@id="login_box"]/div[1]/div[1]/div[2]/span'
 AGREEMENT = '//*[@id="login_box"]/div[2]/div[1]/form/div[1]/div[3]/div/span[2]'
@@ -381,10 +356,18 @@ def make_driver(profile: Path, headless: bool, proxy: str = "") -> webdriver.Chr
         if os.environ.get("SGCC_EAGER_HOOK"):
             driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": HARVEST_JS})
         if headless:
-            # headless=new still reports "HeadlessChrome" in the UA, which the site never sees
-            # from a normal browser.
-            driver.execute_cdp_cmd("Network.setUserAgentOverride",
-                                   {"userAgent": detect_chrome_ua()})
+            # headless=new 在 UA 里插了 "HeadlessChrome"，正常浏览器不会这么报；只换这一个 token，
+            # 版本号和平台都跟着浏览器自己报的走。UA 与它自己的 sec-ch-ua client hints 打架
+            # （UA 写 153、hints 是 154）换来过 f06 秒拒、连题都不弹，所以不能凭配置猜版本。
+            native = driver.execute_script("return navigator.userAgent") or ""
+            clean = native.replace("HeadlessChrome", "Chrome")
+            if clean and clean != native:
+                driver.execute_cdp_cmd("Network.setUserAgentOverride",
+                                       {"userAgent": clean,
+                                        "acceptLanguage": "zh-CN,zh;q=0.9"})
+            # --lang=zh-CN 到不了 navigator.language（Debian chromium 实测仍报 en-US），
+            # 而"中文站点 + 全英文浏览器"是个显眼的组合，用 CDP 的 locale 覆盖直接改。
+            driver.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": "zh-CN"})
     except Exception as exc:  # non-fatal: we can still scrape the DOM
         log.warning("eager setup failed: %s", exc)
     driver.set_page_load_timeout(60)
@@ -854,29 +837,58 @@ def capture_challenge(driver, handler):
     return strip_el, bg_el, strip, bg
 
 
-def ha_store_llm_cfg() -> dict:
-    """读 HA store 里那三项 LLM 配置（SGCC_HA_STORE 指过来时生效）。
+def ha_store_data() -> dict:
+    """SGCC_HA_STORE 指过来时读一次 HA store；没配或读不到就返回 {}。
 
-    目的是"在 HA 界面里改一次就够"：sidecar 每轮开工前重读一遍，不必回头改 .env。
-    只取这三个键；同一份文件里还有账号与密码摘要，一律不读、不打印。
+    挂载要挂 HA 的配置**目录**、路径指到目录里的文件：HA 写 .storage 是"新建临时文件再改名"，
+    直接把那个文件 bind 进容器会把 inode 钉在旧版本上，之后 HA 改写多少遍容器里都还是老内容。
     """
     path = os.environ.get("SGCC_HA_STORE", "")
     if not path:
         return {}
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        data = raw.get("data", raw)
-        key = str(data.get("llm_api_key") or "")
-        model = str(data.get("llm_model") or "")
-        if not (key and model):
-            log.warning("[llm] %s 里没有 llm_api_key/llm_model，沿用环境变量那套", path)
-            return {}
-        return {"api_key": key, "model": model,
-                "base_url": str(data.get("llm_base_url")
-                                or "https://ark.cn-beijing.volces.com/api/v3")}
+        return raw.get("data", raw) or {}
     except Exception as exc:
-        log.warning("[llm] 读 HA store 失败(%s)，沿用环境变量那套", type(exc).__name__)
+        log.warning("[store] 读 %s 失败(%s)，本轮全部沿用环境变量", path, type(exc).__name__)
         return {}
+
+
+def ha_store_llm_cfg() -> dict:
+    """HA 界面里那三项 LLM 配置；配了 SGCC_HA_STORE 就以它为准。"""
+    data = ha_store_data()
+    if not data:
+        return {}
+    key = str(data.get("llm_api_key") or "")
+    model = str(data.get("llm_model") or "")
+    if not (key and model):
+        log.warning("[llm] store 里没有 llm_api_key/llm_model，沿用环境变量那套")
+        return {}
+    return {"api_key": key, "model": model,
+            "base_url": str(data.get("llm_base_url")
+                            or "https://ark.cn-beijing.volces.com/api/v3")}
+
+
+def resolve_identifiers() -> tuple[str, str]:
+    """返回 (主标识, 备用标识)：store 里 account / email_account 是明文，配了 SGCC_HA_STORE 就以它为准，
+    读不到再回落 SGCC_ACCOUNT / SGCC_EMAIL_ACCOUNT。只打长度不打值。
+
+    **密码不在这里取**：实测 store 的 `password` 是 32 位大写十六进制（md5 摘要），而登录框里要填的是
+    明文（我们每轮日志的 pwLen=10 就是它），把摘要填进去前端会再哈希一次 = 必然密码错误。
+    密码继续只从 SGCC_PASSWORD 环境变量来。
+    """
+    data = ha_store_data()
+    from_store = bool(data)
+    acct = str(data.get("account") or "")
+    email = str(data.get("email_account") or "")
+    if not acct:
+        acct = os.environ.get("SGCC_ACCOUNT", "")
+        from_store = False
+    if not email:
+        email = os.environ.get("SGCC_EMAIL_ACCOUNT", "")
+    if acct:
+        log.info("[凭证] 主标识来自 %s，长度=%d", "HA store" if from_store else "环境变量", len(acct))
+    return acct, email
 
 
 def llm_solve_captcha(driver, handler) -> bool:
@@ -1424,6 +1436,26 @@ def _digest(payload) -> str:
 ACCOUNT_SHAPES = {"meter_list"}
 
 
+def parse_window(spec: str):
+    """把 "日用电量,近30天" 这种逗号分隔的文案序列变成一个 set_window(driver)。
+
+    逐字按可见文本点（CLICK_TEXT_JS 取最深的那个匹配元素），中间停 2 秒等页面重发请求。
+    空配置返回 None，harvest_by_meter 就一次都不点，行为和不设这个选项时完全一致。
+    """
+    steps = [s.strip() for s in (spec or "").split(",") if s.strip()]
+    if not steps:
+        return None
+
+    def set_window(driver):
+        out = {}
+        for text in steps:
+            out[text] = driver.execute_script(CLICK_TEXT_JS, text)
+            time.sleep(2.0)
+        return out
+
+    return set_window
+
+
 def harvest_by_meter(driver, pages: list[str], out: Path, wait: int = 18,
                      set_window=None) -> dict:
     """Collect business payloads per meter, attributing each by the 户号 the page echoes back.
@@ -1902,6 +1934,9 @@ def dump_api_summary(driver) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--account", required=False, default="")
+    ap.add_argument("--identifiers", action="store_true",
+                    help="按「store 优先、环境变量兜底」解析出主标识和备用标识，各占一行打到 stdout "
+                         "后退出（给 run_once.sh 取值用；日志都在 stderr，stdout 只有这两行）")
     ap.add_argument("--profile", default="./chrome-profile",
                     help="persistent Chrome profile dir; this IS the captcha/WAF identity")
     ap.add_argument("--headed", action="store_true", help="show the window (debugging)")
@@ -1945,6 +1980,10 @@ def main() -> int:
     ap.add_argument("--by-meter", default="", metavar="ROUTES",
                     help="comma-separated pages to walk once per bound meter, attributing every "
                          "payload by the 用电户号 the page echoes (e.g. /my95598,/electricityCharge)")
+    ap.add_argument("--window", default=os.environ.get("SGCC_WINDOW", ""), metavar="文案,序列",
+                    help="在逐表取数的每个页面上先按可见文本点这几下（逗号分隔），用来把"
+                         "「近7天」切到「近30天」，例如 SGCC_WINDOW='日用电量,近30天'。"
+                         "每页一次、每次换表后再点一次；不设就什么都不点")
     ap.add_argument("--agent-timeout", type=int, default=300,
                     help="seconds to wait for the agent's reply in --captcha agent mode")
     ap.add_argument("--push", action="store_true",
@@ -1957,6 +1996,13 @@ def main() -> int:
         ap.error("--push 只推逐表取数的结果：请加 --by-meter <页面>，否则没有归属可信的数据可推")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.identifiers:
+        primary, fallback = resolve_identifiers()
+        print(primary)
+        print(fallback)
+        return 0
+    if not args.account:
+        args.account = resolve_identifiers()[0]
     if not args.account and not (args.check or args.watch_only or args.harvest_only
                                  or args.manual):
         log.error("--account is required unless --check/--manual/--watch-only/--harvest-only")
@@ -2010,7 +2056,14 @@ def main() -> int:
             if args.by_meter:
                 collected = harvest_by_meter(
                     driver, [r.strip() for r in args.by_meter.split(",") if r.strip()],
-                    Path(args.json_out + ".meters.json"))
+                    Path(args.json_out + ".meters.json"),
+                    set_window=parse_window(args.window))
+                if not collected:
+                    # 会话探针过了不等于有会话：2026-10-02 10:48 那次 harvest-only 只收到登录页
+                    # 自己的 3 个接口，逐表一页都没落回户号，却准备按成功退出——那样 run_once
+                    # 整天都不会再登录，HA 里就是一整天的旧数据。这里把它报成"没有可用会话"。
+                    log.error("harvest-only 没取到任何逐表载荷，按\"没有可用会话\"处理（返回 5）")
+                    return 5
                 if args.push:
                     push_harvest(collected)
             if sess:
@@ -2122,7 +2175,8 @@ def main() -> int:
         if args.by_meter:
             collected = harvest_by_meter(
                 driver, [r.strip() for r in args.by_meter.split(",") if r.strip()],
-                Path(args.json_out + ".meters.json"))
+                Path(args.json_out + ".meters.json"),
+                set_window=parse_window(args.window))
             if args.push:
                 push_harvest(collected)
         log.info("harvested %d decrypted API payloads across %d routes -> %s",
@@ -2134,6 +2188,11 @@ def main() -> int:
         if args.watch_ttl:
             watch_ttl(driver, minutes=args.ttl_interval_min, max_hours=args.ttl_max_hours,
                       csv_path=Path("ttl_watch.csv"))
+        # 登录成功但逐表一页都没落回户号 = 这一轮没有数据可交，报 7 而不是 0，
+        # 免得 run_once 把"取到 0 条"念成"这一轮成功"、整天不再登录。
+        if args.by_meter and not collected:
+            log.error("登录已完成，但逐表取数为空，退出码 7（无数据）")
+            return 7
         return 0
     finally:
         driver.quit()
