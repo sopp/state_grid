@@ -11,8 +11,7 @@ from .const import DOMAIN
 from .utils.logger import LOGGER
 from .utils.store import async_load_from_store
 from .data_client import StateGridDataClient
-from . import click_captcha_solver
-from .config_flow import StateGridOnnxConfigFlow
+from .config_flow import StateGridConfigFlow
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 CONF_PUSH_WEBHOOK = "push_webhook_id"
@@ -26,30 +25,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # 配置优先级：entry.options > entry.data > 存储中的 config
     # entry.options 是用户在"配置"按钮中修改的最新值
     merged = {**(entry.data or {}), **(entry.options or {})}
-
-    if merged:
-        llm_key = merged.get("llm_api_key", "")
-        if llm_key:
-            data_client.llm_api_key = llm_key
-        if "llm_base_url" in merged:
-            data_client.llm_base_url = merged["llm_base_url"]
-        if "llm_model" in merged:
-            data_client.llm_model = merged["llm_model"]
-        if "email_account" in merged:
-            data_client.email_account = merged["email_account"]
-        if "refresh_interval" in merged:
-            try:
-                data_client.refresh_interval = max(12, int(merged["refresh_interval"]))
-            except (ValueError, TypeError):
-                pass
-
-    # 确保至少有 LLM 配置（从 entry.data 或 config 中获取）
-    if data_client.llm_api_key:
-        click_captcha_solver.configure_llm(
-            data_client.llm_api_key,
-            data_client.llm_base_url,
-            data_client.llm_model,
-        )
+    # LLM 三项与备用邮箱已经从本集成移除（网页登录链整段删了）；旧 entry.data 里
+    # 残留的那些键会被直接忽略，不读也不回写
+    if "refresh_interval" in merged:
+        try:
+            data_client.refresh_interval = max(12, int(merged["refresh_interval"]))
+        except (ValueError, TypeError):
+            pass
 
     hass.data[DOMAIN] = data_client
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -110,7 +92,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     HA 在打开 options 配置页时，如果 entry.version < config_flow.VERSION，
     会调用此方法。如果不实现，HA 会报错 500。
     """
-    target_version = StateGridOnnxConfigFlow.VERSION
+    target_version = StateGridConfigFlow.VERSION
     LOGGER.info("ConfigEntry 迁移: 版本 %s -> %s", entry.version, target_version)
     # 我们不需要做任何数据结构变换，直接升级版本号即可
     # 因为所有字段都是 Optional，旧版本数据能兼容新版本

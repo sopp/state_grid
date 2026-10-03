@@ -1,46 +1,24 @@
 """
-国家电网数据客户端 - 基于 bilezhou 原版，仅增强登录部分
+国家电网数据客户端。
 
-原始版本: bilezhou/state_grid (HTTP API 方式，数据获取逻辑正确)
-增强部分:
-1. 支持点选验证码（LLM 视觉大模型识别）
-2. 支持滑块验证码（LLM + 像素算法双模式）
-3. 自动检测验证码类型
-4. 增加 LLM 配置（API Key, Base URL, Model）
-5. RK001冷却机制（密码登录日额度用完后不再无效重试）
-6. 邮箱降级登录（RK001是账号维度的限流，手机号限流后邮箱仍可登录）
+数据只从"推送缓存"来，本模块不再发任何网络请求：
+  * state_grid 自己的 App 通道（app_supply 每小时把 App 接口面的返回翻译成网页形状灌进来）；
+  * sidecar 浏览器容器 POST 给本集成 webhook 的那份真实网页响应（仓库 state_grid_docker）。
 
-数据获取部分完全保持 bilezhou 原版代码不变。
+为什么不留网页 HTTP：95598 在 2026-09 把会话密钥挪进了页面——服务端用客户端公钥加密每一个
+响应，私钥只存在于浏览器里，离线客户端既解不开响应也没法重放抓下来的 header/cookie。
+所以网页那半边的取数只能在真浏览器里做，做完把结果推进来。
+
+取数与解析逻辑仍沿用 bilezhou/state_grid 原版（MIT），下面那套 refresh_data 一行语义没改。
 """
 
-import hashlib
-import io
-import base64
 import json
 import time
-import urllib.parse
 import datetime
 
-from .const import VERSION, FLOW_CONTROL_CODES
+from .const import VERSION
 from .utils.logger import LOGGER
 from .utils.store import async_save_to_store
-from .utils.crypt import a, b, c, d, e
-
-from PIL import Image
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-
-# 延迟导入 click_captcha_solver（模块内部使用懒加载，不会在导入时创建 openai 客户端）
-from . import click_captcha_solver as _captcha_solver
-
-MAX_RETRIES = 3
-
-# ─── 验证码字段名常量 ───
-_F_canvasSrc = 'canvasSrc'
-_F_blockSrc = 'blockSrc'
-_F_blockY = 'blockY'
-_F_iconSrc = 'iconSrc'
-_F_wordSrc = 'wordSrc'
-_F_iconSrcs = 'iconSrcs'
 
 # ─── bilezhou 原版混淆变量映射 ───
 _Au='daily_ele'
@@ -153,25 +131,14 @@ _C='serviceCode'
 _B='funcCode'
 _A='data'
 
-# ─── bilezhou 原版 API 常量 ───
-appKey='0329843199564c55809c77959792b558'
-appSecret='4c1974786ee54d3bb4fb82c1ec5cd1a8'
-baseApi='https://www.95598.cn/api'
-get_request_key_api='/oauth2/outer/c02/f02'
-get_request_authorize_api='/oauth2/oauth/authorize'
-get_web_token_api='/oauth2/outer/getWebToken'
-get_verify_code_api='/osg-web0004/open/c44/f05'
-verify_password_api='/osg-web0004/open/c44/f06'
-click_card_api='/osg-web0004/open/c44/f07'
+# ─── 数据接口路径 ───
+# 它们同时是推送缓存的键的一半：sidecar 推的形状与 App 通道翻译出的形状都按这些路径对齐。
+# 登录/验证码/换 token 那几条路径不再留在这里，appKey/appSecret 也不再需要——本模块不发网络请求。
 get_door_number_api='/osg-open-uc0001/member/c9/f02'
 get_door_balance_api='/osg-open-bc0001/member/c05/f01'
 get_door_bill_api='/osg-open-bc0001/member/c01/f02'
 get_door_ladder_api='/osg-open-bc0001/member/c04/f03'
 get_door_daily_bill_api='/osg-web0004/member/c24/f01'
-sessionIdControlApiList=[verify_password_api,get_verify_code_api,click_card_api]
-keyCodeControlApiList=[verify_password_api,get_verify_code_api,get_request_authorize_api,get_web_token_api,get_door_number_api,get_door_balance_api,get_door_bill_api,get_door_ladder_api,get_door_daily_bill_api,click_card_api]
-authControlApiList=[get_door_number_api,get_door_balance_api,get_door_bill_api,get_door_ladder_api,get_door_daily_bill_api]
-tControlApiList=[get_door_number_api,get_door_balance_api,get_door_bill_api,get_door_ladder_api,get_door_daily_bill_api]
 
 # ─── sidecar 推送通道：载荷形状 → 本集成的 API 路径 ───
 # 形状名由 sidecar 的 payload_shape() 按"载荷里有什么"判定，不用 URL 做标识：
@@ -291,80 +258,29 @@ def get_month_date_range(date_str):
         if B==12:D=1;E=A+1
         else:D=B+1;E=A
         G=datetime.date(E,D,1)-datetime.timedelta(days=1);return A,F,G
-def base64_image_to_bytes(base64_data):
-        A=base64_data
-        if A.startswith('data:image'):
-                B=A.find(',')
-                if B!=-1:A=A[B+1:]
-        C=base64.b64decode(A);return C
-def is_dark(pixel,threshold=100,method=_Aj):
-        F=pixel;D=method
-        if len(F)==4:
-                A,B,C,G=F
-                if G<128:return _N
-        else:A,B,C=F
-        if D==_Aj:H=max(A,B,C);I=min(A,B,C);E=H
-        elif D=='average':E=(A+B+C)//3
-        elif D=='max':E=max(A,B,C)
-        elif D=='perceived':E=int(.299*A+.587*B+.114*C)
-        else:raise ValueError(f"未知方法: {D}")
-        return E<threshold
-def find_max_rectangle(matrix):
-        C=matrix
-        if not C or not C[0]:return 0,0,0,0
-        L,E=len(C),len(C[0]);D=[0]*E;G=0;H=0,0,0,0
-        for F in range(L):
-                for A in range(E):
-                        if C[F][A]==1:D[A]+=1
-                        else:D[A]=0
-                B=[]
-                for A in range(E+1):
-                        M=D[A]if A<E else-1
-                        while B and M<D[B[-1]]:
-                                N=B.pop();I=D[N];J=A if not B else A-B[-1]-1;K=I*J
-                                if K>G:G=K;O=F-I+1;P=A-J;Q=F;R=A-1;H=O,P,Q,R
-                        B.append(A)
-        return H
-
 class StateGridDataClient:
-        hass=_D;coordinator=_D;session=_D;dataVersion=_D;keyCode=_D;publicKey=_D;need_login=_N;phone=_D;codeKey=_D;serialNo=_D;qrCodeSerial=_D;userInfo=_D;accountInfo=_D;powerUserList=_D;doorAccountDict={};cookie=[];timestamp=int(time.time()*1000);accessToken=_D;refreshToken=_D;token=_D;expirationDate=_D;refresh_interval=12;is_debug=_N;shown_notification=_N
+        hass=_D;coordinator=_D;dataVersion=_D;powerUserList=_D;doorAccountDict={}
+        timestamp=int(time.time()*1000);refresh_interval=12;is_debug=_N;account=_D;password=_D
 
-        # ── 增强字段：LLM 配置 ──
-        llm_api_key = ""
-        llm_base_url = "https://ark.cn-beijing.volces.com/api/v3"
-        llm_model = ""
-
-        # ── 增强字段：备用邮箱（RK001降级用） ──
-        email_account = ""
-
-        # ── 增强字段：RK001 冷却时间戳 ──
-        _rk001_cooldown_until = 0.0
-
-        # ── 增强字段：登录失败冷却时间戳（防止 5 分钟内反复重登 → LLM 大量消耗） ──
-        _login_fail_cooldown_until = 0.0
-
-        # ── 增强字段：sidecar 推送来的响应缓存 {(api, 户号): (响应, 期间, 覆盖起, 覆盖止)} ──
+        # ── 推送缓存：App 通道与 sidecar 都往这里灌 {(api, 户号): [(响应, 期间, 覆盖起, 覆盖止), …]} ──
         push_cache = {}
         push_meta = _D
         push_pending = _N
-        push_fed = _N
 
         # ────────────────────────────────────────────
-        # __init__: bilezhou 原版 + 增强字段加载
+        # __init__: 从 store 恢复账号与已解析出来的户号数据
         # ────────────────────────────────────────────
         def __init__(A,hass,config=_D):
                 B=config;A.hass=hass
+                # 请求载荷里那几个 userId / loginAccount 位：网页版是从登录响应里拿的，
+                # 现在不发网络请求了，就留一份空壳。它们不参与缓存匹配（键只看户号、
+                # 期间和日期区间），别让"没有网页会话"把整轮取数炸掉
+                A.userInfo={'userId':'','loginAccount':''}
                 if B is not _D:
                         try:
-                                A.keyCode=B[_A9];A.publicKey=B[_AR];A.accessToken=B[_Ak];A.refreshToken=B[_Al];A.token=B[_AA];A.userInfo=B[_AS];A.powerUserList=B[_AT];A.doorAccountDict=B.get(_Am,{});A.is_debug=B['is_debug'];A.dataVersion=B[_An];A.account=B[_j];A.password=B[_AF];A.refresh_interval=B[_Ao]
+                                A.powerUserList=B.get(_AT,_D);A.doorAccountDict=B.get(_Am,{});A.is_debug=B.get('is_debug',_N)
+                                A.dataVersion=B.get(_An,_D);A.account=B.get(_j,_D);A.password=B.get(_AF,_D);A.refresh_interval=B.get(_Ao,12)
                                 if A.refresh_interval<12:A.refresh_interval=12
-                                # 增强字段
-                                A.llm_api_key=B.get('llm_api_key','')
-                                A.llm_base_url=B.get('llm_base_url','https://ark.cn-beijing.volces.com/api/v3')
-                                A.llm_model=B.get('llm_model','')
-                                A.email_account=B.get('email_account','')
-                                A._rk001_cooldown_until=B.get('_rk001_cooldown_until',0.0)
-                                A._login_fail_cooldown_until=B.get('_login_fail_cooldown_until',0.0)
                                 # 加载 timestamp，使重启后 12 小时间隔判断仍然正确
                                 # 若旧版存储中没有该字段，则保留类默认值（当前时间）
                                 _saved_ts=B.get(_s)
@@ -374,19 +290,16 @@ class StateGridDataClient:
                 # 类属性 push_cache 是全实例共用的一份 dict，这里换新，避免多个实例互相消费对方的数据
                 A.push_cache={};A.push_meta=_D
 
-                # 配置 LLM 客户端（延迟加载）
-                if A.llm_api_key:
-                        _captcha_solver.configure_llm(A.llm_api_key,A.llm_base_url,A.llm_model)
-
         # ────────────────────────────────────────────
         # save_data: bilezhou 原版 + 增强字段保存
         # ────────────────────────────────────────────
         async def save_data(B):
-                A={};A[_A9]=B.keyCode;A[_AR]=B.publicKey;A[_Ak]=B.accessToken;A[_Al]=B.refreshToken;A[_AA]=B.token;A[_AS]=B.userInfo;A[_AT]=B.powerUserList;A[_Am]=B.doorAccountDict;A['is_debug']=B.is_debug;A[_An]=VERSION;A[_j]=B.account;A[_AF]=B.password;A[_Ao]=B.refresh_interval
-                # 增强字段
-                A['llm_api_key']=B.llm_api_key;A['llm_base_url']=B.llm_base_url;A['llm_model']=B.llm_model
-                A['email_account']=B.email_account;A['_rk001_cooldown_until']=B._rk001_cooldown_until
-                A['_login_fail_cooldown_until']=B._login_fail_cooldown_until
+                # 只存"取数与解析"要的东西：账号、密码摘要、户号数据、新鲜时间。
+                # 网页会话那套（keyCode/publicKey/accessToken/refreshToken/token）和 LLM 三项、
+                # 备用邮箱、冷却时间戳都不再写——登录链已经整段删掉了，
+                # 容器要的配置住在 state_grid_docker 的 store 里
+                A={};A[_AT]=B.powerUserList;A[_Am]=B.doorAccountDict;A['is_debug']=B.is_debug
+                A[_An]=VERSION;A[_j]=B.account;A[_AF]=B.password;A[_Ao]=B.refresh_interval
                 # 保存 timestamp，使重启后 12 小时间隔判断仍然正确
                 A[_s]=B.timestamp
                 await async_save_to_store(B.hass,'state_grid.config',A)
@@ -429,21 +342,10 @@ class StateGridDataClient:
                 A.push_meta={'received_at':int(time.time()*1000),'items':n,
                              'pushed_at':(bundle or {}).get('pushed_at'),'skipped':skipped[:8]}
                 # 数据的"新鲜时间"就是推送时间：timestamp 不跟着走的话 12 小时闸门一直是开的，
-                # 缓存抽干后每 5 分钟的轮询都会退回 HTTP 取数
+                # 每 5 分钟的轮询都会重新走一遍解析（虽然不再发网络请求，也是白跑）
                 A.timestamp=int(time.time()*1000)
-                # 清掉上一轮留下的 need_login：refresh_data 每个电表取完余额就检查它，是 True
-                # 就 return。09-30 真机上 22:24 那轮命中日志停在第二块表的余额之后、store 没更新，
-                # 就是这个标记把整轮掐掉的（缓存里的数据本身没问题）
-                A.need_login=_N
                 LOGGER.warning('sidecar 推送入仓 %d 份（%d 个键，跳过 %d）',n,len(cache),len(skipped))
                 return n
-
-        # ────────────────────────────────────────────
-        # 以下为 bilezhou 原版方法（不变）
-        # ────────────────────────────────────────────
-
-        def encrypt_post_data(A,data):B={'_access_token':A.accessToken[len(A.accessToken)//2:]if A.accessToken else'','_t':A.token[len(A.token)//2:]if A.token else'','_data':data,_s:A.timestamp};return A.encrypt_wapper_data(B)
-        def encrypt_wapper_data(A,data):B=a(json_dumps(data),A.keyCode);return{_A:B+c(B+str(A.timestamp)),'skey':d(A.keyCode,A.publicKey),_s:str(A.timestamp)}
         def handle_request_result_message(E,api,result,printResult=_V):
                 D='message';C='resultMessage';A=result
                 if E.is_debug and printResult:LOGGER.warning(api+'-'+json_dumps(A))
@@ -453,480 +355,40 @@ class StateGridDataClient:
                 elif D in A:B=A[D]
                 else:B=json_dumps(A)
                 return B
-
         # ────────────────────────────────────────────
-        # __fetch_safe: bilezhou 原版 + 最小化 RK001 处理
-        # 关键改动: 只在 API 返回 code=11401 时触发流控逻辑，
-        # 不做关键字匹配，避免误判正常响应
+        # 取数：只从推送缓存要载荷，不再发任何网络请求
         # ────────────────────────────────────────────
         async def __fetch_safe(A,api,data):
-                B=await A.__fetch(api,data)
-                if _I not in B:return B
-                code_val = B[_I]
-
-                # RK001 流控: 仅当 code 精确匹配 11401 时触发
+                """__fetch 的薄壳。留着这一层是为了 refresh_data 那整段一行都不用改
+                —— 它调的一直是 __fetch_safe；网络与登录都去掉后，这里只剩统一异常出口。
+                """
                 try:
-                        if int(code_val) in FLOW_CONTROL_CODES:
-                                LOGGER.warning("[RK001] 数据API遇流控(code=%s), email=%s, cooldown=%s",
-                                        code_val, A.email_account or '(未配置)', A.is_rk001_cooldown())
-                                # 尝试邮箱降级登录
-                                if A.email_account and not A.is_rk001_cooldown():
-                                        LOGGER.info("[RK001] 尝试邮箱降级登录...")
-                                        login_ok = await A.__try_email_fallback_login()
-                                        if login_ok:
-                                                return await A.__fetch(api,data)
-                                # 邮箱降级也失败或未配置，设置冷却
-                                A._set_rk001_cooldown()
-                                A.need_login=_V
-                                A._show_token_notification(msg='密码登录日额度已用完(RK001)，请等待明日0点自动重试')
-                                return B
-                except (ValueError, TypeError):
-                        pass  # code 不是数字，走原版逻辑
+                        return await A.__fetch(api,data)
+                except Exception as exc:
+                        LOGGER.warning('取数异常(%s)：%s %s',api,type(exc).__name__,str(exc)[:120])
+                        return {'code':'fetch_error','message':str(exc)[:120]}
 
-                # bilezhou 原版: 需要重新登录的错误码（不含11401）
-                if A.__need_login(code_val):
-                        if A.push_fed:
-                                # 本轮由 sidecar 供数：登录是浏览器的活，这里再自己登一次
-                                # 就是拿真实请求去撞风控，缓存里也没有这个请求的替代数据
-                                LOGGER.warning('取数未命中缓存且登录态失效(%s)，sidecar 供数模式下不再自助登录', api)
-                                return B
-                        await A.__try_password_login()
-                        if A.need_login is _N:return await A.__fetch(api,data)
-                        if A.need_login is _V:A._show_token_notification()
-                        return B
-                else:return B
-
-        # __need_login: bilezhou 原版 + 排除11401
-        def __need_login(B,code):
-                A=code
-                # 11401=RK001限流，不触发常规重新登录
-                try:
-                        if int(A) in FLOW_CONTROL_CODES:return _N
-                except (ValueError, TypeError):
-                        pass
-                if 10015==A or 10108==A or 10009==A or 10207==A or 10005==A or 10010==A or 30010==A or 10002==A:B.need_login=_V;return _V
-                return _N
-
-        # __try_password_login: bilezhou 原版 + RK001冷却感知 + 登录失败冷却（防 LLM 雪崩）
-        async def __try_password_login(A):
-                # RK001 冷却期内，尝试邮箱降级
-                if A.is_rk001_cooldown():
-                        if A.email_account:
-                                LOGGER.info("[RK001冷却] 手机号在冷却期，尝试邮箱降级登录...")
-                                login_ok = await A.__try_email_fallback_login()
-                                if login_ok:return
-                        else:
-                                LOGGER.warning("[RK001冷却] 跳过密码登录，未配置邮箱降级，等待明日0点")
-                        return
-
-                # 登录失败冷却期内，直接跳过（防止 5 分钟内反复调 LLM 解算验证码）
-                if A.is_login_fail_cooldown():
-                        LOGGER.debug("[登录失败冷却] 跳过本次密码登录重试，等待冷却结束")
-                        A.need_login=_V
-                        return
-
-                # bilezhou 原版: 尝试密码登录（retry 由 3 降至 1，单次最多消耗 2 次 LLM）
-                B=await A.password_login(A.account,A.password,_V,1)
-                if _G in B and B[_G]==0:
-                        # 登录成功：清除所有失败冷却
-                        A.need_login=_N;A.shown_notification=_N
-                        A._login_fail_cooldown_until=0.0
-                        await A.save_data();return
-
-                # 密码登录失败，如果是RK001则尝试邮箱降级
-                if A._is_rk001_error(B):
-                        LOGGER.warning("[RK001] 手机号密码登录遇流控，尝试邮箱降级...")
-                        login_ok = await A.__try_email_fallback_login()
-                        if login_ok:return
-                        A._set_rk001_cooldown()
-                        A.need_login=_V
-                        return
-
-                # 非 RK001 失败：设置 5 分钟登录失败冷却 + 显式标记 need_login
-                # 防止 refresh_data 内多个 __fetch_safe 串联反复触发重登 → LLM 大量消耗
-                LOGGER.warning("[登录失败] 密码登录未通过(errcode=%s)，进入 5 分钟冷却", B.get(_G))
-                A.need_login=_V
-                A._set_login_fail_cooldown(300)
-
-        # ────────────────────────────────────────────
-        # __fetch: bilezhou 原版（不变）
-        # ────────────────────────────────────────────
         async def __fetch(A,api,data,header=_D):
-                # sidecar 用真实浏览器抓到的响应优先命中，消费一次即失效：
-                # 同一份载荷不该同时喂给两个不同的请求（例如日电量的近 40 天窗口和补月的窗口）。
+                # 推送缓存的载荷命中即用、一次一份：同一 (接口, 户号) 可以挂多份，
+                # 由 _push_covers 按期间和覆盖区间挑。
                 if A.push_cache:
                         K0=_push_hit_key(api,data)
                         Q0=A.push_cache.get(K0) or []
                         for i in range(len(Q0)):
-                                # 同一个键下挂着好几份（按月/按年的请求各要一份），按灌入顺序挑第一份够覆盖的
                                 if _push_covers(api,data,Q0[i]):
                                         B0=Q0.pop(i)
                                         if not Q0:A.push_cache.pop(K0,_D)
-                                        LOGGER.warning('命中 sidecar 推送: %s 户号=%s',api,K0[1])
+                                        LOGGER.warning('命中推送缓存: %s 户号=%s',api,K0[1])
                                         return B0[0]
-                        # 没命中就留下判据：是键对不上，还是键对上了但期间/区间都不够。
-                        # 少了这一行，"灌了 7 条却只吃到 1 条"这种现场只能靠猜。
                         LOGGER.warning('推送缓存未命中: %s 户号=%s 原因=%s 现有=%s',api,K0[1],
                                        '覆盖不足' if Q0 else '无此键',
                                        sorted('%s|%s' % ('/'.join(k[0].split('/')[-2:]), k[1])
                                               for k in A.push_cache))
-                R='encryptData';Q='client_secret';P='application/json;charset=UTF-8';O='Content-Type';M=header;J='client_id';D=api;A.timestamp=int(time.time()*1000);E=A.timestamp
-                if A.keyCode is _D:A.keyCode=e(32,16,2)
-                G=A.keyCode;F={'Accept':P,O:P,'version':'1.0',_E:'0901',_s:str(E),'wsgwType':'web','appKey':appKey};C=data
-                if D==get_request_key_api:C={J:appKey,Q:appSecret};H=a(json_dumps(C),G);C={_A:H+c(H+str(E)),'skey':d(G,'04461932EDC916BFEF2EA324056296214E8281FDF9F962C82E28D59C7B98BB5ED479801B8AB8F86E933B73A136A431D40E0FF769A7209E63E67C8B9326F277A058'),J:appKey,_s:str(E)}
-                elif D==get_request_authorize_api:
-                        C={J:appKey,'response_type':_I,_Ap:'/test',_s:E,'rsi':A.token};C=urllib.parse.urlencode(C);F[O]='application/x-www-form-urlencoded; charset=UTF-8';F[_A9]=G;K=async_get_clientsession(A.hass,_N)
-                        async with K.post(baseApi+D,data=C,headers=F)as L:B=await L.json();B=b(B[_A],A.token);B=json.loads(B);return B
-                elif D==get_web_token_api:C={'grant_type':'authorization_code','sign':c(appKey+str(E)),Q:appSecret,'state':'464606a4-184c-4beb-b442-2ab7761d0796','key_code':G,J:appKey,_s:E,_I:C[_I]};H=a(json_dumps(C),G);C={_A:H+c(H+str(E)),'skey':d(G,A.publicKey),_s:str(E)}
-                else:C=A.encrypt_post_data(C)
-                if M is not _D:F.update(M)
-                if D in sessionIdControlApiList:F['sessionId']='web'+str(E)
-                if D in keyCodeControlApiList:F[_A9]=G
-                if D in authControlApiList:F['Authorization']='Bearer '+A.accessToken[:len(A.accessToken)//2]
-                if D in tControlApiList:F['t']=A.token[:len(A.token)//2]
-                I=0
-                while I<MAX_RETRIES:
-                        try:
-                                K=async_get_clientsession(A.hass,_N)
-                                async with K.post(baseApi+D,json=C,headers=F)as L:
-                                        B=await L.text()
-                                        if B.startswith('{'):
-                                                B=json.loads(B)
-                                                if R in B:B=b(B[R],G);B=json.loads(B)
-                                        return B
-                        except Exception as N:
-                                LOGGER.error(f"请求错误: {N}. 尝试第 {I+1} 次重试...");I+=1
-                                if I==MAX_RETRIES:raise N
-
-        # ────────────────────────────────────────────
-        # __get_request_key: bilezhou 原版（不变）
-        # ────────────────────────────────────────────
-        async def __get_request_key(A):
-                A.keyCode=_D;B=await A.__fetch(get_request_key_api,{});C=A.handle_request_result_message('get_request_key_api',B)
-                if B[_I]==_F:A.keyCode=B[_A][_A9];A.publicKey=B[_A][_AR];return{_G:0}
-                return{_G:1,_y:C}
-
-        # ────────────────────────────────────────────
-        # __get_pass_verify_code: 增强版（支持滑块+点选验证码类型检测）
-        # ────────────────────────────────────────────
-        async def __get_pass_verify_code(B,account,password):
-                C={_j:account,_AF:password,'canvasHeight':200,'canvasWidth':310};A=await B.__fetch(get_verify_code_api,C);D=B.handle_request_result_message('get_verify_code_api',A,_N)
-                if _I in A and str(A[_I])=='1' and _A in A:
-                        data = A[_A]
-                        B.ticket=data.get('ticket','')
-                        # 检测验证码类型
-                        captcha_type = _captcha_solver.detect_captcha_type(data)
-                        LOGGER.info(f"检测到验证码类型: {captcha_type}")
-                        return{_G:0,_AU:data.get(_F_canvasSrc,''),_AV:data.get(_F_blockSrc,''),_AW:data.get(_F_blockY,0),_F_iconSrc:data.get(_F_iconSrc,''),_F_wordSrc:data.get(_F_wordSrc,''),_F_iconSrcs:data.get(_F_iconSrcs,[]),'captcha_type':captcha_type}
-                return{_G:1,_y:D}
-
-        # ────────────────────────────────────────────
-        # __verify_password: 增强版（支持captcha_type参数）
-        # ────────────────────────────────────────────
-        async def __verify_password(B,account,password,code,loginKey,captcha_type='slider'):
-                C={'loginKey':loginKey,_I:code,'params':{_Q:{_m:'',_o:_AN,_l:_M,_n:''},_AX:{'optSys':'ios','pushId':'00000','addressProvince':'110100',_AF:password,'addressRegion':'110101',_j:account,'addressCity':'330100'}},'Channels':'web'}
-                # 根据验证码类型添加字段
-                if captcha_type=='click':
-                        C['complexSliderRet']=0;C['complexSliderType']='clickImg'
-                elif captcha_type=='slider':
-                        C['complexSliderRet']=0;C['complexSliderType']='blockPuzzle'
-                A=await B.__fetch(verify_password_api,C);D=B.handle_request_result_message('verify_password_api',A)
-                if A[_I]==1:
-                        if A[_A]and A[_A][_f]and A[_A][_f]['resultCode']=='0000':B.token=A[_A][_AG][_AA];B.userInfo=A[_A][_AG][_AS][0];return{_G:0}
-                B._log_login_reject('f06/%s' % captcha_type, A)
-                return{_G:1,_y:D}
-
-        # ────────────────────────────────────────────
-        # __verify_click_captcha: 增强版（点选验证码f07端点）
-        # ────────────────────────────────────────────
-        @staticmethod
-        def _log_login_reject(tag, result):
-                """登录被服务端拒时只打这三样：code、srvrt 里的码和文案、顶层键名。
-                不打值本身（响应里可能带 token），也不打请求体（里面有密码）。"""
-                S = result.get('srvrt') or (result.get('data') or {}).get('srvrt') or {}
-                LOGGER.warning("[%s] code=%s resultCode=%s resultMessage=%s 顶层键=%s",
-                               tag, result.get('code'), S.get('resultCode'),
-                               S.get('resultMessage') or result.get('message'),
-                               sorted(result)[:8])
-
-        async def __verify_click_captcha(B,account,password,code,loginKey):
-                C={'loginKey':loginKey,_I:code,'params':{_Q:{_m:'',_o:_AN,_l:_M,_n:''},_AX:{'optSys':'android','pushId':'000000','addressProvince':'110100',_AF:password,'addressRegion':'110101',_j:account,'addressCity':'330100'}},'Channels':'web'}
-                LOGGER.info(f"提交点选验证码(f07/clickCard): code={code}")
-                A=await B.__fetch(click_card_api,C);D=B.handle_request_result_message('click_card_api',A)
-                if _I in A and str(A[_I])=='1':
-                        if A[_A]and A[_A].get(_f)and A[_A][_f].get('resultCode')=='0000':B.token=A[_A][_AG][_AA];B.userInfo=A[_A][_AG][_AS][0];return{_G:0}
-                LOGGER.warning(f"clickCard(f07) 验证失败: {D}，尝试回退到 f06...")
-                B._log_login_reject('f07', A)
-                return{_G:1,_y:D}
-
-        # ────────────────────────────────────────────
-        # __get_request_authorize: bilezhou 原版（不变）
-        # ────────────────────────────────────────────
-        async def __get_request_authorize(B):
-                A=await B.__fetch(get_request_authorize_api,{});E=B.handle_request_result_message('get_request_authorize_api',A)
-                if _I in A and A[_I]==_F:C=A[_A][_Ap];D=C.rfind('code=');B.authorizeCode=C[D+5:D+5+32];return{_G:0}
-                return{_G:1,_y:E}
-
-        # ────────────────────────────────────────────
-        # __get_web_token: bilezhou 原版（不变）
-        # ────────────────────────────────────────────
-        async def __get_web_token(A):
-                C={_I:A.authorizeCode};B=await A.__fetch(get_web_token_api,C);D=A.handle_request_result_message('get_web_token_api',B)
-                if _I in B and B[_I]==_F:A.accessToken=B[_A]['access_token'];A.refreshToken=B[_A]['refresh_token'];return{_G:0}
-                return{_G:1,_y:D}
-
-        # ────────────────────────────────────────────
-        # 验证码解算方法（增强）
-        # ────────────────────────────────────────────
-
-        def _solve_slider_captcha_pixel(self, captcha_data):
-                """bilezhou 原版像素算法解算滑块验证码"""
-                block_y = int(captcha_data.get(_F_blockY, 0))
-                block_height = 0
-                block_bytes = base64_image_to_bytes(captcha_data.get(_F_blockSrc, ''))
-                with Image.open(io.BytesIO(block_bytes)) as bg_img:
-                        bg_w, bg_h = bg_img.size
-                        block_height = bg_h
-                canvas_bytes = base64_image_to_bytes(captcha_data.get(_F_canvasSrc, ''))
-                with Image.open(io.BytesIO(canvas_bytes)) as canvas_img:
-                        cw, ch = canvas_img.size
-                        cropped = canvas_img.crop((0, block_y, cw, block_y + block_height))
-                        binary = cropped.point(lambda p: 255 if p > 150 else 0)
-                w, h = binary.width, binary.height
-                matrix = [[0 for _ in range(h)] for _ in range(w)]
-                for y_idx in range(h):
-                        for x_idx in range(w):
-                                pixel = binary.getpixel((x_idx, y_idx))
-                                if is_dark(pixel, 100): matrix[x_idx][y_idx] = 1
-                top, left, bottom, right = find_max_rectangle(matrix)
-                distance = left
-                LOGGER.info(f"像素算法滑块距离: {distance}")
-                return distance
-
-        def _solve_slider_captcha_llm(self, captcha_data):
-                """LLM 解算滑块验证码"""
-                try:
-                        canvas_base64 = captcha_data.get(_F_canvasSrc, '')
-                        if not canvas_base64: return 0
-                        return _captcha_solver.solve_slider_captcha_llm(canvas_base64, canvas_width=310, canvas_height=200)
-                except Exception as ex:
-                        LOGGER.exception("LLM 滑块解算失败: %s", ex)
-                        return 0
-
-        def _solve_click_captcha(self, captcha_data):
-                """LLM 解算点选验证码，返回坐标字符串"""
-                try:
-                        ref_base64 = captcha_data.get(_F_iconSrc, '') or captcha_data.get(_F_wordSrc, '')
-                        if not ref_base64 and _F_iconSrcs in captcha_data:
-                                icons = captcha_data[_F_iconSrcs]
-                                if isinstance(icons, list) and len(icons) > 0:
-                                        ref_base64 = icons[0] if isinstance(icons[0], str) else ''
-                        main_base64 = captcha_data.get(_F_canvasSrc, '')
-                        if not ref_base64 or not main_base64:
-                                LOGGER.error("点选验证码缺少参考图标或主图数据")
-                                return ""
-                        main_bytes = base64_image_to_bytes(main_base64)
-                        with Image.open(io.BytesIO(main_bytes)) as main_img:
-                                main_w, main_h = main_img.size
-                        coords = _captcha_solver.solve_click_captcha(ref_base64, main_base64, main_w, main_h)
-                        if not coords or len(coords) < 2:
-                                LOGGER.error("LLM 未能识别点选验证码坐标")
-                                return ""
-                        coord_str = "|".join([f"{x},{y}" for x, y in coords])
-                        LOGGER.info(f"点选验证码坐标: {coord_str}")
-                        return coord_str
-                except Exception as ex:
-                        LOGGER.exception("点选验证码解算失败: %s", ex)
-                        return ""
-
-        # ────────────────────────────────────────────
-        # RK001 流控检测（简化版：只检查 code 字段，不做关键字匹配）
-        # ────────────────────────────────────────────
-
-        @staticmethod
-        def _is_rk001_error(result):
-                """检查结果是否为 RK001 流控错误（只检查 code 字段，避免误判）"""
-                code = result.get('code') or result.get('raw_code') or result.get(_G)
-                if code is not None:
-                        try:
-                                if int(code) in FLOW_CONTROL_CODES:
-                                        return True
-                        except (ValueError, TypeError):
-                                pass
-                return False
-
-        def is_rk001_cooldown(self):
-                """检查当前是否处于 RK001 冷却期"""
-                if self._rk001_cooldown_until <= 0:
-                        return False
-                now = time.time()
-                if now >= self._rk001_cooldown_until:
-                        self._rk001_cooldown_until = 0.0
-                        return False
-                return True
-
-        def _set_rk001_cooldown(self):
-                """设置 RK001 冷却到当天 23:59:59（北京时间）"""
-                import datetime as _dt
-                now = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
-                end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
-                self._rk001_cooldown_until = end_of_day.timestamp()
-                LOGGER.warning(
-                        "[RK001冷却] 密码登录日额度已用完，冷却至 %s（北京时间），期间不再尝试密码登录",
-                        end_of_day.strftime('%Y-%m-%d %H:%M:%S'),
-                )
-
-        def is_login_fail_cooldown(self):
-                """检查当前是否处于登录失败冷却期（5 分钟内不再重试，避免反复调 LLM）"""
-                if self._login_fail_cooldown_until <= 0:
-                        return False
-                now = time.time()
-                if now >= self._login_fail_cooldown_until:
-                        self._login_fail_cooldown_until = 0.0
-                        return False
-                return True
-
-        def _set_login_fail_cooldown(self, seconds=300):
-                """设置登录失败冷却（默认 5 分钟），期间不再尝试密码登录，防止 LLM 反复消耗"""
-                self._login_fail_cooldown_until = time.time() + seconds
-                LOGGER.warning(
-                        "[登录失败冷却] 密码登录未通过，%d 秒内不再重试（避免反复调用 LLM 解算验证码）",
-                        seconds,
-                )
-
-        # ────────────────────────────────────────────
-        # password_login: 增强版（LLM验证码 + RK001冷却）
-        # ────────────────────────────────────────────
-        async def password_login(B,account,password,encode=_N,retry=0):
-                # RK001 冷却期内跳过手机号密码登录
-                if B.is_rk001_cooldown() and account == B.account:
-                        LOGGER.warning("[RK001冷却] 跳过手机号密码登录")
-                        return{_G:1,_y:'手机号密码登录日额度已用完(RK001)'}
-
-                E=account;C=password
-                if encode==_N:C=hashlib.md5(C.encode()).hexdigest().upper()
-                M=_D;A=await B.__get_request_key()
-                if _G in A and A[_G]!=0:return A
-                A=await B.__get_pass_verify_code(E,C)
-                if _G in A and A[_G]!=0:return A
-
-                captcha_type = A.get('captcha_type', 'slider')
-
-                if captcha_type == 'click':
-                        # 点选验证码 - LLM 解算
-                        LOGGER.info("正在使用 LLM 解算点选验证码...")
-                        verify_code = await B.hass.async_add_executor_job(B._solve_click_captcha, A)
-                        if not verify_code:
-                                if retry<=0:return{_G:1,_y:'点选验证码解算失败'}
-                                LOGGER.error('点选验证码解算失败，将重试！');A=await B.password_login(E,C,_V,retry-1)
-                                if _G in A and A[_G]!=0:return A
-                                return A
-                        # 点选验证码：先尝试 f07，失败回退 f06
-                        result_verify = await B.__verify_click_captcha(E,C,verify_code,B.ticket)
-                        if _G in result_verify and result_verify[_G]!=0:
-                                LOGGER.warning('f07 clickCard 失败，回退到 f06 + complexSliderType=clickImg...')
-                                result_verify = await B.__verify_password(E,C,verify_code,B.ticket,captcha_type='click')
-                        if _G in result_verify and result_verify[_G]!=0:
-                                if B._is_rk001_error(result_verify):
-                                        return{_G:1,_y:'验证登录遇流控(RK001)'}
-                                if retry<=0:return result_verify
-                                LOGGER.error('账号密码登录失败，将重试！');A=await B.password_login(E,C,_V,retry-1)
-                                if _G in A and A[_G]!=0:return A
-                                return A
-                else:
-                        # 滑块验证码 - 优先 LLM，回退像素算法
-                        N=int(A.get(_AW,0));O=0;P=base64_image_to_bytes(A.get(_AV,''))
-                        if P:
-                                with Image.open(io.BytesIO(P))as F:G,H=F.size;O=H
-                        Q=base64_image_to_bytes(A.get(_AU,''))
-                        M=0
-                        if B.llm_api_key and Q:
-                                LOGGER.info("正在使用 LLM 解算滑块验证码...")
-                                M = await B.hass.async_add_executor_job(B._solve_slider_captcha_llm, A)
-                                if M == 0:
-                                        LOGGER.warning("LLM 滑块解算失败，回退到像素算法...")
-                                        if Q:
-                                                with Image.open(io.BytesIO(Q))as F:G,H=F.size;R=F.crop((0,N,G,N+O));D=R.point(lambda p:255 if p>150 else 0)
-                                                G=D.width;H=D.height;I=[[0 for Ax in range(H)]for Ax in range(G)]
-                                                for J in range(D.height):
-                                                        for K in range(D.width):
-                                                                S=D.getpixel((K,J))
-                                                                if is_dark(S,100):I[K][J]=1
-                                                                else:I[K][J]=0
-                                                T,U,V,W=find_max_rectangle(I);M=T
-                        elif Q:
-                                # 原版像素算法
-                                with Image.open(io.BytesIO(Q))as F:G,H=F.size;R=F.crop((0,N,G,N+O));D=R.point(lambda p:255 if p>150 else 0)
-                                G=D.width;H=D.height;I=[[0 for Ax in range(H)]for Ax in range(G)]
-                                for J in range(D.height):
-                                        for K in range(D.width):
-                                                S=D.getpixel((K,J))
-                                                if is_dark(S,100):I[K][J]=1
-                                                else:I[K][J]=0
-                                T,U,V,W=find_max_rectangle(I);M=T
-
-                        A=await B.__verify_password(E,C,M,B.ticket,captcha_type='slider')
-                        if _G in A and A[_G]!=0:
-                                if B._is_rk001_error(A):
-                                        return{_G:1,_y:'验证登录遇流控(RK001)'}
-                                if retry<=0:return A
-                                LOGGER.error('账号密码登录失败，将重试！');A=await B.password_login(E,C,_V,retry-1)
-                                if _G in A and A[_G]!=0:return A
-                B.account=E;B.password=C;return await B.__get_token()
-
-        # ────────────────────────────────────────────
-        # 邮箱降级登录（增强）
-        # ────────────────────────────────────────────
-
-        async def __try_email_fallback_login(A):
-                """尝试邮箱降级登录，成功返回True，失败返回False"""
-                if not A.email_account:
-                        LOGGER.warning("[邮箱降级] 未配置备用邮箱")
-                        return False
-                if not A.password:
-                        LOGGER.warning("[邮箱降级] 密码为空")
-                        return False
-                try:
-                        LOGGER.info("[邮箱降级] 使用邮箱 %s 登录...", A.email_account)
-                        result = await A.password_login(A.email_account, A.password, _V, 2)
-                        if _G in result and result[_G]==0:
-                                A.need_login=_N;A.shown_notification=_N
-                                LOGGER.info("[邮箱降级] 登录成功!")
-                                await A.save_data()
-                                return True
-                        else:
-                                errmsg = result.get(_y,'')
-                                LOGGER.warning("[邮箱降级] 登录失败: %s", errmsg)
-                                if A._is_rk001_error(result):
-                                        A._set_rk001_cooldown()
-                                return False
-                except Exception as ex:
-                        LOGGER.exception("[邮箱降级] 登录异常: %s", ex)
-                        return False
-
-        # ────────────────────────────────────────────
-        # __get_token: bilezhou 原版（不变）
-        # ────────────────────────────────────────────
-        async def __get_token(B):
-                A=await B.__get_request_authorize()
-                if _G in A and A[_G]!=0:return A
-                A=await B.__get_web_token()
-                if _G in A and A[_G]!=0:return A
-                B.need_login=_N;await B.save_data();return{_G:0}
-
-        # ────────────────────────────────────────────
-        # _show_token_notification: 增强版（支持自定义消息）
-        # ────────────────────────────────────────────
-        def _show_token_notification(A,msg=_D):
-                if A.shown_notification==_V:return
-                A.shown_notification=_V
-                import persistent_notification
-                if msg is _D:msg='国家电网登录失败，将在下个轮询重试'
-                persistent_notification.create(A.hass,msg,title='国家电网 - 登录失败');LOGGER.error(msg)
-
-        # ────────────────────────────────────────────
-        # 以下全部为 bilezhou 原版数据获取方法（不变）
-        # ────────────────────────────────────────────
+                # 不命中也不自己去登录：网页那条路的会话密钥在浏览器页面里（服务端用客户端
+                # 公钥加密每个响应），离线客户端解不开，2026-09 起就这样。要那份数据
+                # 只能由 sidecar 容器抓了推进来（仓库 state_grid_docker）。
+                # 这里不能碰 A.timestamp —— 它代表"数据新鲜度"， miss 也算新鲜的话 12 小时闸门就废了
+                return {'code':'no_cache','message':'推送缓存里没有这格的载荷（本轮不走网络）'}
 
         async def __get_door_number(A):
                 B=configuration[_Ac];G={_C:B[_C],_E:B[_E],_T:B[_T],_Q:{_l:B[_Q][_l],_m:B[_Q][_m],_n:B[_Q][_n],_o:B[_Q][_o]},_AX:{_W:A.userInfo[_W]},_AA:A.token};C=await A.__fetch_safe(get_door_number_api,G);H=A.handle_request_result_message('get_door_number_api',C)
@@ -991,11 +453,9 @@ class StateGridDataClient:
                 # 如果本次刷新中途失败（登录失败/异常），还原 timestamp 避免下次 12 小时判断错误
                 _orig_ts=C.timestamp
                 # 推送是一次性的触发器：这一轮用掉就熄灭。push_cache 里可能有本轮用不到的形状
-                # （比如还没抓到的阶梯），拿它非空当强制刷新条件的话，每 5 分钟的轮询都会被强制
-                # 走一遍取数，而取数未命中缓存就是真实 HTTP 请求
+                # （比如暂时还抓不到的阶梯），拿它非空当强制刷新条件的话，每 5 分钟的轮询
+                # 都会被迫重跑一遍整段解析
                 C.push_pending=_N
-                # 本轮由 sidecar 供数：登录态问题不该中止整轮（见 __fetch_safe 与 need_login 两处）
-                C.push_fed=bool(C.push_cache)
                 try:
                         if f:await C.__get_door_number()
                         A6=f or int(time.time()*1000)-C.timestamp>C.refresh_interval*3600*1000
@@ -1004,19 +464,6 @@ class StateGridDataClient:
                         if not C.powerUserList:LOGGER.warning('本轮电表列表为空，没有任何户号可取数')
                         for A in C.powerUserList:
                                 A7=A[_g];C.doorAccountDict[A7]=A;await C.__get_door_balance(A)
-                                if C.need_login is _V:
-                                        # 由 sidecar 供数时不中止整轮：refresh_data 每个电表取完余额就检查
-                                        # need_login，为真直接 return，后面那块表的缓存数据就没机会进
-                                        # doorAccountDict（09-30 真机 22:24 那轮命中日志停在第二块表余额之后）
-                                        if C.push_fed:
-                                                LOGGER.warning('登录态失效，但本轮由 sidecar 供数，继续处理后面的电表')
-                                                C.need_login=_N
-                                                C.timestamp=_orig_ts
-                                        else:
-                                                # 保存原始 timestamp：__fetch 内部会更新它，登录失败时要还原，
-                                                # 否则下次 12 小时判断会以为本轮已经取过数
-                                                C.timestamp=_orig_ts
-                                                return
                                 if _Y in A:
                                         g=catchFloat(A[_Y],'accountBalance');AB=catchFloat(A[_Y],'estiAmt');AC=catchFloat(A[_Y],'prepayBal');W=catchFloat(A[_Y],'sumMoney');AD=catchFloat(A[_Y],'historyOwe');h=A[_Y][_AK];i=''
                                         if y in A[_Y]:i=A[_Y][y]

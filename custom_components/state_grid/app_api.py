@@ -29,6 +29,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
 from .utils.crypt import (AA, BB, SM4_DECRYPT, SM4_ENCRYPT, m_hash, m_kdf)
+from .const import RATE_LIMIT_CODES
 from .utils.logger import LOGGER
 
 APP_BASE_URL = "https://csc-service.sgcc.com.cn:28630"
@@ -340,6 +341,7 @@ class AppChannel:
         self.accounts: list[AppAccount] = []
         self.raw_accounts: list[dict[str, Any]] = []
         self.expires_at = 0
+        self.last_error = ""
         self._lock = asyncio.Lock()
 
     async def async_load_session(self) -> bool:
@@ -375,9 +377,21 @@ class AppChannel:
                 ui = ui[0] if ui else {}
             if not biz.get("token"):
                 srv = ((plain or {}).get("data") or {}).get("srvrt") or {}
+                code = str((plain or {}).get("code") or "")
+                result_code = str(srv.get("resultCode") or "")
+                text = str(srv.get("resultMessage") or (plain or {}).get("message") or "")
+                # 配置向导要把"密码错了"和"连不上/被限流"分开报，光一个 False 会把用户
+                # 引去改密码，而真正的原因可能是流控
+                if code in RATE_LIMIT_CODES or "RK001" in text or "日额度" in text:
+                    self.last_error = "rate_limited"
+                elif "密码" in text or "账号" in text or result_code in ("0100", "0101"):
+                    self.last_error = "invalid_auth"
+                elif plain is None:
+                    self.last_error = "cannot_connect"
+                else:
+                    self.last_error = "unknown"
                 LOGGER.warning("App 通道登录未完成 code=%s resultCode=%s message=%r",
-                               (plain or {}).get("code"), srv.get("resultCode"),
-                               str(srv.get("resultMessage") or (plain or {}).get("message"))[:80])
+                               code, result_code, text[:80])
                 return False
             self.token = str(biz["token"])
             self.user_id = str(ui.get("userId") or "")

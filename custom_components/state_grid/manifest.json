@@ -1,12 +1,9 @@
 {
   "domain": "state_grid",
   "name": "国家电网",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "documentation": "https://github.com/tiejiang29/state_grid",
-  "requirements": [
-    "openai>=1.0.0",
-    "Pillow"
-  ],
+  "requirements": [],
   "codeowners": ["tiejiang29"],
   "config_flow": true,
   "dependencies": ["webhook"],
