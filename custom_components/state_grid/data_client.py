@@ -554,6 +554,12 @@ class StateGridDataClient:
                                 A.push_cache.pop(K0,_D)
                                 LOGGER.warning('命中 sidecar 推送: %s 户号=%s',api,K0[1])
                                 return B0[0]
+                        # 没命中就留下判据：是键对不上，还是键对上了但期间/区间不够。
+                        # 少了这一行，"灌了 7 条却只吃到 1 条"这种现场只能靠猜。
+                        LOGGER.warning('推送缓存未命中: %s 户号=%s 原因=%s 现有=%s',api,K0[1],
+                                       '覆盖不足' if B0 is not _D else '无此键',
+                                       sorted('%s|%s' % ('/'.join(k[0].split('/')[-2:]), k[1])
+                                              for k in A.push_cache))
                 R='encryptData';Q='client_secret';P='application/json;charset=UTF-8';O='Content-Type';M=header;J='client_id';D=api;A.timestamp=int(time.time()*1000);E=A.timestamp
                 if A.keyCode is _D:A.keyCode=e(32,16,2)
                 G=A.keyCode;F={'Accept':P,O:P,'version':'1.0',_E:'0901',_s:str(E),'wsgwType':'web','appKey':appKey};C=data
@@ -981,6 +987,7 @@ class StateGridDataClient:
                         A6=f or int(time.time()*1000)-C.timestamp>C.refresh_interval*3600*1000
                         if A6 is _N:return
                         H=datetime.datetime.now();D=H-datetime.timedelta(days=1);U=f"{D.year}-{D.month:02d}-{D.day:02d}";F=D-datetime.timedelta(days=40);V=f"{F.year}-{F.month:02d}-{F.day:02d}"
+                        if not C.powerUserList:LOGGER.warning('本轮电表列表为空，没有任何户号可取数')
                         for A in C.powerUserList:
                                 A7=A[_g];C.doorAccountDict[A7]=A;await C.__get_door_balance(A)
                                 if C.need_login is _V:
@@ -1077,9 +1084,10 @@ class StateGridDataClient:
                         # timestamp 已在 __fetch 中更新为最新请求时间，无需额外设置
                         await C.save_data()
                 except Exception:
-                        # 裸 except 会把中断现场一起吞掉，排查时什么线索都没有；
-                        # is_debug 下补一份回溯，行为（还原 timestamp、返回 0）保持不变。
-                        if C.is_debug:LOGGER.exception('refresh_data 中断')
+                        # 裸 except 会把中断现场一起吞掉，排查时什么线索都没有。回溯无条件打：
+                        # 一轮中断本来就少见，憋到 is_debug 才打，出问题时日志里就是空白。
+                        # 行为（还原 timestamp、返回 0）保持不变。
+                        LOGGER.exception('refresh_data 中断')
                         # 异常时还原 timestamp，避免下次 12 小时判断错误
                         C.timestamp=_orig_ts
                         return 0
