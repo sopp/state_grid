@@ -1,3 +1,5 @@
+import hashlib
+
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -5,6 +7,7 @@ from homeassistant.helpers.selector import selector
 from .const import DOMAIN, LLM_BASE_URL, LLM_MODEL
 from .utils.logger import LOGGER
 from .data_client import StateGridDataClient
+from .app_api import AppChannel
 from . import click_captcha_solver
 
 
@@ -42,10 +45,48 @@ class StateGridOnnxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_phone"
             elif email and "@" not in email:
                 errors["base"] = "invalid_email"
-            elif not llm_api_key:
-                errors["base"] = "missing_llm_key"
-            elif not llm_model:
-                errors["base"] = "missing_llm_model"
+
+            if not errors:
+                # 先走 App 通道：这条路上没有验证码、也不消耗网页登录额度，
+                # 所以登录得成就直接建条目，LLM 那三项留着不填也能跑。
+                digest = hashlib.md5(password.encode()).hexdigest()
+                app_ok = False
+                try:
+                    app_ok = await AppChannel(self.hass, phone, digest).async_login()
+                except Exception as app_exc:
+                    LOGGER.warning("[配置流程] App 通道登录异常：%s %s",
+                                   type(app_exc).__name__, str(app_exc)[:120])
+                if app_ok:
+                    dc = StateGridDataClient(hass=self.hass, config=None)
+                    dc.llm_api_key = llm_api_key
+                    dc.llm_base_url = llm_base_url
+                    dc.llm_model = llm_model
+                    dc.email_account = email
+                    # 凭证只落 store：网页登录路径是 password_login 内部顺手写的，
+                    # App 这条路不经过它，所以这里得自己写 account 和那份大写摘要
+                    dc.account = phone
+                    dc.password = digest.upper()
+                    try:
+                        await dc.save_data()
+                    except Exception:
+                        LOGGER.exception("保存 state_grid.config 失败，但 App 登录已成功。")
+                    self.hass.data[DOMAIN] = dc
+                    LOGGER.warning(
+                        "[配置流程] App 通道登录成功：每小时供数一次，未配置 LLM 也能取数")
+                    return self.async_create_entry(
+                        title=f"国家电网 - {phone}",
+                        data={
+                            "llm_api_key": llm_api_key,
+                            "llm_base_url": llm_base_url,
+                            "llm_model": llm_model,
+                            "email_account": email,
+                        },
+                    )
+                # App 不行才需要网页兜底，这时候 LLM 是硬要求（要解验证码）
+                if not llm_api_key:
+                    errors["base"] = "missing_llm_key"
+                elif not llm_model:
+                    errors["base"] = "missing_llm_model"
 
             if not errors:
                 dc = StateGridDataClient(hass=self.hass, config=None)
@@ -121,13 +162,13 @@ class StateGridOnnxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("password", default=password): selector(
                     {"text": {"type": "password"}}
                 ),
-                vol.Required("llm_api_key", default=llm_api_key): selector(
+                vol.Optional("llm_api_key", default=llm_api_key): selector(
                     {"text": {"type": "password"}}
                 ),
                 vol.Optional("llm_base_url", default=llm_base_url): selector(
                     {"text": {"type": "text"}}
                 ),
-                vol.Required("llm_model", default=llm_model): selector(
+                vol.Optional("llm_model", default=llm_model): selector(
                     {"text": {"type": "text"}}
                 ),
             }
@@ -137,7 +178,11 @@ class StateGridOnnxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
-                "fallback_hint": "手机号登录遇RK001流控时，将自动降级为邮箱登录（需填写备用邮箱）"
+                "fallback_hint": (
+                    "优先用 App 通道登录（无需验证码、不需要 LLM 配置）。"
+                    "只有 App 通道不成时，才需要下面的 LLM 配置走网页登录兜底；"
+                    "手机号登录遇 RK001 流控会自动降级为邮箱登录（需填写备用邮箱）。"
+                )
             },
         )
 
@@ -186,11 +231,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 except (ValueError, TypeError):
                     pass
 
-            # llm_model 强制必填：用户提交后不能为空
-            if "llm_model" in new_data and not new_data["llm_model"]:
-                errors["llm_model"] = "missing_llm_model"
-            elif "llm_model" not in new_data and not current.get("llm_model"):
-                errors["llm_model"] = "missing_llm_model"
+            # LLM 只在走网页兜底时才用得到，所以留空是合法状态（App 通道不需要）
 
             # ── 新密码：留空=不修改；填值=触发一次登录验证，成功后保存 ──
             new_password_raw = user_input.get("new_password") or ""
@@ -318,10 +359,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     "llm_base_url",
                     default=_str("llm_base_url", LLM_BASE_URL),
                 ): selector({"text": {"type": "text"}}),
-                vol.Required(
+                vol.Optional(
                     "llm_model",
                     default=_str("llm_model", ""),
-                    description="请输入大模型ID（如 doubao-seed-2-0-pro-260215）",
+                    description="大模型ID（如 doubao-seed-20260215）；留空表示不配网页兜底，只走 App 通道",
                 ): selector({"text": {"type": "text"}}),
                 vol.Optional(
                     "email_account",

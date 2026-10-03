@@ -3,27 +3,28 @@
     "step": {
       "user": {
         "title": "国家电网 - 账号登录",
-        "description": "使用手机号登录，遇流控时自动降级为邮箱登录。\n\n{fallback_hint}",
+        "description": "优先使用 App 通道登录（无需验证码、无需 LLM 配置）。\n\n{fallback_hint}",
         "data": {
           "phone": "手机号",
-          "email": "备用邮箱（流控降级用）",
+          "email": "备用邮箱（网页兜底流控降级用）",
           "password": "密码",
-          "llm_api_key": "LLM API Key",
+          "llm_api_key": "LLM API Key（可留空）",
           "llm_base_url": "LLM Base URL",
-          "llm_model": "LLM 模型 ID"
+          "llm_model": "LLM 模型 ID（可留空）"
         },
         "data_description": {
-          "llm_model": "请输入大模型ID（如 doubao-seed-2-0-pro-260215），此项必填，用于验证码识别"
+          "llm_api_key": "只有走网页登录兜底时才需要，用于验证码识别",
+          "llm_model": "大模型 ID（如 doubao-seed-2-0-pro-260215），只有走网页登录兜底时才需要"
         }
       }
     },
     "error": {
-      "invalid_auth": "账号或密码错误，或验证码识别失败",
-      "cannot_connect": "无法连接到国家电网服务器",
-      "missing_llm_key": "请配置 LLM API Key（用于验证码识别）",
-      "missing_llm_model": "请输入大模型ID（用于验证码识别）",
-      "invalid_email": "请输入有效的邮箱地址",
+      "invalid_auth": "账号或密码错误",
       "invalid_phone": "请输入有效的手机号码",
+      "invalid_email": "请输入有效的邮箱地址",
+      "missing_llm_key": "App 通道没能登录，改用网页登录需要填 LLM API Key（用于验证码识别）",
+      "missing_llm_model": "App 通道没能登录，改用网页登录需要填大模型 ID（用于验证码识别）",
+      "cannot_connect": "无法连接到国家电网服务器",
       "rk001_rate_limit": "密码登录日额度已用完（RK001流控），请明日0点后重试"
     },
     "abort": {
@@ -34,17 +35,17 @@
     "step": {
       "init": {
         "title": "国家电网 - 选项",
-        "description": "修改 LLM 配置、备用邮箱和刷新间隔（留空表示不修改）。如需更新国网登录密码，请填写「新密码」字段，提交时会自动验证一次。",
+        "description": "修改 LLM 配置（只影响网页兜底）、备用邮箱和刷新间隔，留空表示不修改。如需更新国网登录密码，请填写「新密码」字段，提交时会自动验证一次。",
         "data": {
           "llm_api_key": "LLM API Key（留空不修改）",
           "llm_base_url": "LLM Base URL",
           "llm_model": "LLM 模型 ID",
-          "email_account": "备用邮箱（流控降级用）",
+          "email_account": "备用邮箱（网页兜底流控降级用）",
           "refresh_interval": "刷新间隔（小时，12-48）",
           "new_password": "新密码（留空不修改；填写后会触发一次登录验证）"
         },
         "data_description": {
-          "llm_model": "请输入大模型ID（如 doubao-seed-2-0-pro-260215），此项必填，用于验证码识别"
+          "llm_model": "大模型 ID（如 doubao-seed-2-0-pro-260215）；留空表示不配网页兜底，只走 App 通道"
         }
       }
     },
@@ -52,7 +53,6 @@
       "invalid_auth": "新密码验证失败，请检查密码是否正确",
       "cannot_connect": "无法连接到国家电网服务器",
       "no_account": "未找到运行中的集成实例，请重试或重启 Home Assistant",
-      "missing_llm_model": "请输入大模型ID（用于验证码识别）",
       "rk001_cooldown_cannot_verify": "当前处于 RK001 流控冷却期，无法验证新密码，请明日0点后重试",
       "rk001_rate_limit": "密码登录日额度已用完（RK001流控），请明日0点后重试"
     }
