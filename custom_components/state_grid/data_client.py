@@ -187,6 +187,9 @@ PUSH_SHAPE_API={
 PUSH_ACCOUNT_SHAPES=('meter_list',)
 OK_CODES=('1','0000','000000')
 CONS_NO_KEYS=('consNo','consNoSrc','elecCustNo','custNo')
+# c04/f03 在 2026 升级后给不给抄表读数没人知道（解析出来的 month_meter_num 一直是 0）。
+# 只在本进程里说一句它的真实键名，别为一次结构确认刷掉几十行日志。
+_ladder_shape_logged = False
 
 
 def _find_key(obj, names):
@@ -955,11 +958,15 @@ class StateGridDataClient:
                         if F in B[_A]:return B[_A][F]
 
         async def __get_door_mouth_bill(F,door_account,monthBill):
+                global _ladder_shape_logged
                 M='billRead';J=monthBill;G='pointList';E='readList';C=door_account;K=datetime.datetime.strptime(J[_Z],'%Y%m');N=f"{K.year}-{K.month:02d}";O={_A:{_H:configuration[_k][_H],_B:configuration[_k][_B],_R:configuration[_k][_R],_c:configuration[_k][_c],_AC:C[_g],_b:C[_X],_h:C[_h],'queryDate':N,_Aq:C[_X],_AK:C[_As],_AZ:F.userInfo[_W],_O:'',_L:'',_AI:F.userInfo[_Aa],_AH:F.userInfo[_W]},_C:configuration[_k][_C],_E:configuration[_k][_E],_T:C[_X]};B=await F.__fetch(get_door_ladder_api,O);Q=F.handle_request_result_message('get_door_ladder_api',B)
                 if _I in B and str(B[_I]) in ('1', '000000') and _A in B and B[_A]and _AB in B[_A]:
                         A=B[_A][_AB][0];H=0;L=0;D=[]
                         if E in A and len(A[E])>0:D=A[E]
                         elif G in A and len(A[G])>0 and E in A[G][0]and len(A[G][0][E])>0:D=A[G][0][E]
+                        if len(D)==0 and not _ladder_shape_logged:
+                                _ladder_shape_logged=_V
+                                LOGGER.warning('c04/f03 的 list[0] 里没有 readList/pointList，抄表读数取不到；实际键=%s',sorted(A)[:16])
                         if len(D)>0:
                                 L=catchFloat(D[0],'activeCount')
                                 if M in D[0]:
