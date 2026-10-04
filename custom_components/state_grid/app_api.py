@@ -34,6 +34,9 @@ from .utils.logger import LOGGER
 
 APP_BASE_URL = "https://csc-service.sgcc.com.cn:28630"
 LOGIN_PATH = "emss-uia-center-front/member/c2/f01"
+# 新设备验证：先让服务端给手机号发一条短信（业务类型 logindevice），
+# 拿回一个短时效的 codeKey，再把它和 6 位验证码塞回 LOGIN_PATH 重登一次。
+DEVICE_SMS_PATH = "emss-uia-center-front/member/c1/f01"
 DAILY_PATH = "emss-bia-bill-front/member/c11/f01"
 MONTHLY_PATH = "emss-bia-bill-front/member/c51/f04"
 BALANCE_PATH = "emss-bia-balance-front/member/c16/f01"
@@ -226,16 +229,19 @@ def _balance_payload(a: AppAccount, user_id: str) -> dict[str, Any]:
 
 
 def _login_payload(account: str, password_md5: str, model: str,
-                   release: str) -> dict[str, Any]:
+                   release: str, code: str = "", code_key: str = "") -> dict[str, Any]:
     """`password_md5` 是**已经算好的** 32 位 md5 十六进制小写。
 
     网页端发的是 md5().upper()、App 发的是同一值的 .lower()，两边只差大小写；
-    HA 的 store 里存的就是那份摘要，所以集成不必持有明文密码就能走 App 通道。
+    HA 的 store 里存的也正是摘要，所以集成不必持有明文密码就能走 App 通道。
+
+    `code` / `code_key` 是"新设备验证"那两步带回来的东西，平时是空串——空串也要发，
+    因为这个键本来就在报文里，App 每次登录都带。
     """
     ts = int(time.time() * 1000)
     push = "000000,000000"
     return {
-        "quInfo": {"code": "", "codeKey": "", "account": account,
+        "quInfo": {"code": code, "codeKey": code_key, "account": account,
                    "password": password_md5,
                    "optSys": "Android", "pushId": push,
                    "addressCity": "", "addressProvince": "", "addressRegion": ""},
@@ -245,6 +251,20 @@ def _login_payload(account: str, password_md5: str, model: str,
                     "devciceName": model, "pushId": push},
         "checkCode": check_code(account, ts),
         "avalonValidCode": "",
+    }
+
+
+def _device_sms_payload(account: str, model: str, release: str) -> dict[str, Any]:
+    """`c1/f01` 的发短信报文。
+
+    键名 `devciceId / devciceName / devciceIp` 是 App 里就拼错的写法，照抄——
+    "顺手改正"会让服务端认不出这几个字段。
+    """
+    return {
+        "uscInfo": {"tenant": "state_grid", "member": "2202",
+                    "devciceId": "000000", "devciceName": model, "devciceIp": "127.0.0.1"},
+        "quInfo": {"voiceCodeFlag": False, "account": account, "sendType": 0,
+                   "businessType": "logindevice"},
     }
 
 
@@ -342,6 +362,8 @@ class AppChannel:
         self.raw_accounts: list[dict[str, Any]] = []
         self.expires_at = 0
         self.last_error = ""
+        # 服务端把这次登录当成"新设备"，需要发一条短信再重登
+        self.needs_device_sms = False
         self._lock = asyncio.Lock()
 
     async def async_load_session(self) -> bool:
@@ -362,9 +384,11 @@ class AppChannel:
                                       "accounts": self.raw_accounts}
         await self.device.async_save()
 
-    async def async_login(self, force: bool = False) -> bool:
+    async def async_login(self, force: bool = False, code: str = "",
+                          code_key: str = "") -> bool:
         async with self._lock:
-            if not force and await self.async_load_session():
+            self.needs_device_sms = False
+            if not force and not code and await self.async_load_session():
                 return True
             # force=True 时上面那条短路不进 `async_load_session`，而它是唯一的
             # "读回/首建设备画像"入口。少这一步，`self.device.identity` 就在新装的第一次
@@ -374,7 +398,8 @@ class AppChannel:
             await self.device.async_load()
             model, release = self.device.identity
             token, token_time = await self.device.async_device_token()
-            params = _login_payload(self.account, self.password_md5, model, release)
+            params = _login_payload(self.account, self.password_md5, model, release,
+                                    code=code, code_key=code_key)
             plain = await self._post(LOGIN_PATH, params, token=token, token_time=token_time,
                                      model=model, release=release, login_params=params)
             biz = ((plain or {}).get("data") or {}).get("bizrt") or {}
@@ -393,7 +418,12 @@ class AppChannel:
                 if code in RATE_LIMIT_CODES or "RK001" in text or "日额度" in text:
                     self.last_error = "rate_limited"
                 elif result_code == "4006" or "新设备" in text:
+                    # 这一步是能救的：发一条 logindevice 短信拿 codeKey，再带验证码重登
                     self.last_error = "new_device"
+                    self.needs_device_sms = True
+                elif "验证码" in text:
+                    # 也要在密码那支前面：验证码错/失效说的是"再输一次"，不是"改密码"
+                    self.last_error = "invalid_code"
                 elif "密码" in text or "账号" in text or result_code in ("0100", "0101"):
                     self.last_error = "invalid_auth"
                 elif plain is None:
@@ -415,6 +445,32 @@ class AppChannel:
             LOGGER.warning("App 通道登录成功：令牌 %d 字符、有效期 %d 天，户号 %d 块",
                            len(self.token), life // 86400, len(self.accounts))
             return True
+
+    async def async_send_device_sms(self) -> str:
+        """让服务端给这个手机号发一条"新设备"短信，返回它给的 codeKey。
+
+        codeKey 有效期很短、只用一次，所以拿到就该立刻去要验证码。日志里只打长度：
+        它等同于一次登录的凭据，手机号也不打。
+        """
+        model, release = self.device.identity
+        token, token_time = await self.device.async_device_token()
+        plain = await self._post(DEVICE_SMS_PATH,
+                                 _device_sms_payload(self.account, model, release),
+                                 token=token, token_time=token_time,
+                                 model=model, release=release)
+        data = (plain or {}).get("data") or {}
+        biz = data.get("bizrt") or {}
+        key = str(biz.get("codeKey") or "") if isinstance(biz, dict) else ""
+        if not key:
+            srv = data.get("srvrt") or {}
+            LOGGER.warning("新设备短信没发出去：code=%s resultCode=%s message=%r",
+                           str((plain or {}).get("code") or ""),
+                           str(srv.get("resultCode") or ""),
+                           str(srv.get("resultMessage") or "")[:80])
+        else:
+            LOGGER.warning("已请求新设备短信，codeKey %d 字符（有效期很短，请尽快输入验证码）",
+                           len(key))
+        return key
 
     async def _post(self, path: str, payload: Any, *, token: str, token_time: str,
                     model: str, release: str, login_params=None,

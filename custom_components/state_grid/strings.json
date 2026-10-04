@@ -12,6 +12,13 @@
           "phone": "国家电网 App 的登录手机号",
           "password": "只用于生成 md5 摘要，明文不落盘、不进日志"
         }
+      },
+      "device_verification": {
+        "title": "国家电网 - 新设备验证",
+        "description": "{sms_hint}",
+        "data": {
+          "verification_code": "短信验证码（6 位数字）"
+        }
       }
     },
     "error": {
@@ -19,8 +26,9 @@
       "invalid_phone": "请输入有效的手机号码",
       "cannot_connect": "无法连接到国家电网服务器",
       "rk001_rate_limit": "该标识今天的登录额度已用完（RK001 流控），请明日 0 点后重试",
-      "new_device_required": "服务端要求先做一次\"新设备安全验证\"（原话：您正在使用一台新设备登录网上国网）。本集成不做短信/扫码验证，这一步没法在 Home Assistant 里完成；HA 日志 [custom_components.state_grid] 里有服务端的 code 和原话",
-      "app_login_failed": "App 通道登录没完成，请把 HA 日志里 [custom_components.state_grid] 那几行看一下（里面有服务端返回的 code 和原话）"
+      "new_device_required": "国网要求先做一次「新设备安全验证」，但验证短信没能发出去。请回到上一步重新提交一次密码；如果连续几次都这样，说明这个手机号当前被风控拦着，集成做不了这一步",
+      "app_login_failed": "App 通道登录没完成，请把 HA 日志里 [custom_components.state_grid] 那几行看一下（里面有服务端返回的 code 和原话）",
+      "invalid_verification_code": "验证码不对或已经过期，请重新填写（填错后请回到上一步重提一次密码，好让国网再发一条短信）"
     },
     "abort": {
       "single_instance_allowed": "已存在国家电网集成实例，请先删除后再添加"
@@ -35,6 +43,13 @@
           "refresh_interval": "刷新间隔（小时，12-48）",
           "new_password": "新密码（留空不修改）"
         }
+      },
+      "device_verification": {
+        "title": "国家电网 - 新设备验证",
+        "description": "{sms_hint}",
+        "data": {
+          "verification_code": "短信验证码（6 位数字）"
+        }
       }
     },
     "error": {
@@ -44,7 +59,8 @@
       "rk001_rate_limit": "该标识今天的登录额度已用完（RK001 流控），请明日 0 点后重试",
       "app_login_failed": "App 通道没能验证这个密码，详情看 HA 日志里 [custom_components.state_grid] 的行",
       "no_account": "未找到运行中的集成实例，请重试或重启 Home Assistant",
-      "new_device_required": "服务端要求先做一次\"新设备安全验证\"（原话：您正在使用一台新设备登录网上国网）。本集成不做短信/扫码验证，这一步没法在 Home Assistant 里完成；HA 日志 [custom_components.state_grid] 里有服务端的 code 和原话"
+      "new_device_required": "国网要求先做一次「新设备安全验证」，但验证短信没能发出去。请回到上一步重新提交一次密码；如果连续几次都这样，说明这个手机号当前被风控拦着，集成做不了这一步",
+      "invalid_verification_code": "验证码不对或已经过期，请重新填写（填错后请回到上一步重提一次密码，好让国网再发一条短信）"
     }
   }
 }

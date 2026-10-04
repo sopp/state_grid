@@ -12,6 +12,13 @@
           "phone": "The phone number used by the State Grid app",
           "password": "Only used to derive the md5 digest; the plaintext is never stored or logged"
         }
+      },
+      "device_verification": {
+        "title": "State Grid - New device check",
+        "description": "{sms_hint}",
+        "data": {
+          "verification_code": "SMS code (6 digits)"
+        }
       }
     },
     "error": {
@@ -20,7 +27,8 @@
       "cannot_connect": "Cannot reach the State Grid servers",
       "rk001_rate_limit": "This identifier has used up its daily sign-in quota (RK001 rate limit). Try again after 00:00",
       "app_login_failed": "The App channel did not sign in. Check the [custom_components.state_grid] lines in the Home Assistant log - they carry the server code and message",
-      "new_device_required": "The server wants a one-time \"new device\" security check first (its words: you are signing in from a new device). This integration does not do SMS or QR verification, so that step cannot be completed inside Home Assistant; the server's code and message are in the HA [custom_components.state_grid] log"
+      "new_device_required": "State Grid wants a one-time \"new device\" check, but the SMS could not be sent. Go back one step and submit your password again; if this keeps happening this phone number is being blocked and the integration cannot finish that step",
+      "invalid_verification_code": "The code is wrong or has expired. Go back one step and resubmit your password so State Grid sends a new SMS"
     },
     "abort": {
       "single_instance_allowed": "A State Grid instance already exists. Remove it before adding another"
@@ -35,6 +43,13 @@
           "refresh_interval": "Refresh interval (hours, 12-48)",
           "new_password": "New password (empty keeps current)"
         }
+      },
+      "device_verification": {
+        "title": "State Grid - New device check",
+        "description": "{sms_hint}",
+        "data": {
+          "verification_code": "SMS code (6 digits)"
+        }
       }
     },
     "error": {
@@ -44,7 +59,8 @@
       "rk001_rate_limit": "This identifier has used up its daily sign-in quota (RK001 rate limit). Try again after 00:00",
       "app_login_failed": "The App channel could not verify this password. See the [custom_components.state_grid] lines in the log",
       "no_account": "No running integration instance found. Try again or restart Home Assistant",
-      "new_device_required": "The server wants a one-time \"new device\" security check first (its words: you are signing in from a new device). This integration does not do SMS or QR verification, so that step cannot be completed inside Home Assistant; the server's code and message are in the HA [custom_components.state_grid] log"
+      "new_device_required": "State Grid wants a one-time \"new device\" check, but the SMS could not be sent. Go back one step and submit your password again; if this keeps happening this phone number is being blocked and the integration cannot finish that step",
+      "invalid_verification_code": "The code is wrong or has expired. Go back one step and resubmit your password so State Grid sends a new SMS"
     }
   }
 }

@@ -2,6 +2,10 @@
 
 网页那条登录链（验证码、邮箱降级、会话密钥）已经整段删掉——95598 升级后每个响应都用
 浏览器里的客户端公钥加密，离线客户端解不开。本集成因此不发任何网页请求。
+
+服务端把这台合成设备当成"新设备"时会要求一次短信验证（`resultCode=4006`）：那时多发一个
+请求让国网把验证码发到手机号，拿回短时效的 codeKey，配置向导多出一页填 6 位数字，再把
+验证码连同 codeKey 塞回**同一个登录请求**。只在被要求时发生，日常取数碰不到它。
 """
 import hashlib
 
@@ -22,10 +26,17 @@ USER_HINT = (
     "App 侧也没有对应端点，其余实体都来自 App 接口。"
 )
 
+SMS_HINT = (
+    "国网把这次登录当成「新设备」，需要一次短信验证。验证码已经发到你登记的那个手机号上，"
+    "请把收到的 6 位数字填进来。\n\n"
+    "这只需要做一次，之后的自动登录不再问；验证码过期或填错可以重来。"
+)
+
 # App 登录失败的原因 → 配置页的错误键。"密码错了"和"今天被限流"要让用户做的事完全不同，
 # 都回一句"登录失败"只会让人反复改密码
 APP_ERROR_KEYS = {
     "invalid_auth": "invalid_auth",
+    "invalid_code": "invalid_verification_code",
     "rate_limited": "rk001_rate_limit",
     "cannot_connect": "cannot_connect",
     "new_device": "new_device_required",
@@ -33,22 +44,34 @@ APP_ERROR_KEYS = {
 }
 
 
-async def app_sign_in(hass, account: str, password: str) -> tuple[bool, str]:
-    """用明文密码做一次 App 登录，返回 (是否成功, 配置页错误键)。
+async def app_sign_in(hass, account: str, password: str, code: str = "",
+                      code_key: str = "") -> tuple[bool, str, str]:
+    """用明文密码做一次 App 登录，返回 (是否成功, 配置页错误键, 短信 codeKey)。
 
     App 接口收的是密码的 md5 摘要，HA 里存的也正是摘要；明文只在这次调用里用完就丢，
     不进配置项、不进 store、不进日志。
+
+    第三项非空表示服务端要"新设备验证"、而且短信已经发出去了，调用方该去要验证码。
+    已经带着验证码回来过一次就**不再重发**：不然用户每填错一次就多一条短信。
     """
     channel = AppChannel(hass, account, hashlib.md5(password.encode()).hexdigest())
-    if await channel.async_login(force=True):
-        return True, ""
-    return False, APP_ERROR_KEYS.get(channel.last_error, "app_login_failed")
+    if await channel.async_login(force=True, code=code, code_key=code_key):
+        return True, "", ""
+    err_key = APP_ERROR_KEYS.get(channel.last_error, "app_login_failed")
+    if channel.needs_device_sms and not code:
+        sent = await channel.async_send_device_sms()
+        return False, err_key, sent
+    return False, err_key, ""
 
 
 class StateGridConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """配置步骤：手机号 + 密码，App 通道登录成功就建条目。"""
+    """配置步骤：手机号 + 密码，App 通道登录成功就建条目（被要求时多一步短信）。"""
 
     VERSION = 12
+
+    def __init__(self) -> None:
+        # 短信那一步要跨步骤留住这几样：手机号、明文密码（只在内存里，用完就清）、codeKey
+        self._pending: dict[str, str] = {}
 
     async def async_step_user(self, user_input=None):
         if self._async_current_entries():
@@ -69,20 +92,13 @@ class StateGridConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             elif not phone.isdigit():
                 errors["base"] = "invalid_phone"
             else:
-                ok, err_key = await app_sign_in(self.hass, phone, password)
+                ok, err_key, code_key = await app_sign_in(self.hass, phone, password)
                 if ok:
-                    dc = StateGridDataClient(hass=self.hass, config=None)
-                    # 凭证只落 store：App 通道每轮取数读的就是这两项。网页那套会话字段
-                    # （keyCode/accessToken/userInfo…）已经没有生产者，不再往 store 里写
-                    dc.account = phone
-                    dc.password = hashlib.md5(password.encode()).hexdigest().upper()
-                    try:
-                        await dc.save_data()
-                    except Exception:
-                        LOGGER.exception("保存 state_grid.config 失败，但登录已成功。")
-                    self.hass.data[DOMAIN] = dc
-                    LOGGER.warning("[配置] App 通道登录成功，接下来按刷新间隔供数")
-                    return self.async_create_entry(title=f"国家电网 - {phone}", data={})
+                    return await self._async_finish(phone, password)
+                if code_key:
+                    self._pending = {"phone": phone, "password": password,
+                                     "code_key": code_key}
+                    return await self.async_step_device_verification()
                 errors["base"] = err_key
 
         return self.async_show_form(
@@ -100,6 +116,50 @@ class StateGridConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={"how_it_works": USER_HINT},
         )
+
+    async def async_step_device_verification(self, user_input=None):
+        """填手机收到的 6 位验证码：带着它和 codeKey 再登一次同一个接口。"""
+        errors: dict[str, str] = {}
+        phone = str(self._pending.get("phone") or "")
+        if user_input is not None:
+            code = str(user_input.get("verification_code", "")).strip()
+            if len(code) != 6 or not code.isdigit():
+                errors["base"] = "invalid_verification_code"
+            else:
+                ok, err_key, _ = await app_sign_in(
+                    self.hass, phone, str(self._pending.get("password") or ""),
+                    code=code, code_key=str(self._pending.get("code_key") or ""))
+                if ok:
+                    return await self._async_finish(
+                        phone, str(self._pending.get("password") or ""))
+                # codeKey 是一次性的，用错一次就作废：让用户回去重提一次密码，
+                # 那里会重新发一条短信，而不是在这一页上悄悄重发
+                self._pending = {}
+                errors["base"] = err_key or "app_login_failed"
+        return self.async_show_form(
+            step_id="device_verification",
+            data_schema=vol.Schema({
+                vol.Required("verification_code"): selector({"text": {"type": "text"}})
+            }),
+            errors=errors,
+            description_placeholders={"sms_hint": SMS_HINT},
+        )
+
+    async def _async_finish(self, phone: str, password: str):
+        """登录成功之后建条目：凭证只落 store，明文密码不留在这个流程对象里。"""
+        self._pending = {}
+        dc = StateGridDataClient(hass=self.hass, config=None)
+        # 凭证只落 store：App 通道每轮取数读的就是这两项。网页那套会话字段
+        # （keyCode/accessToken/userInfo…）已经没有生产者，不再往 store 里写
+        dc.account = phone
+        dc.password = hashlib.md5(password.encode()).hexdigest().upper()
+        try:
+            await dc.save_data()
+        except Exception:
+            LOGGER.exception("保存 state_grid.config 失败，但登录已成功。")
+        self.hass.data[DOMAIN] = dc
+        LOGGER.warning("[配置] App 通道登录成功，接下来按刷新间隔供数")
+        return self.async_create_entry(title=f"国家电网 - {phone}", data={})
 
     @staticmethod
     @callback
@@ -119,6 +179,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         #   - self.config_entry = config_entry 会触发 AttributeError
         # 解决方案：不碰 config_entry 这个名字，用自己的私有属性 _entry 保存。
         self._entry = config_entry
+        self._pending: dict[str, str] = {}
 
     async def async_step_init(self, user_input=None):
         current = {**(self._entry.data or {}), **(self._entry.options or {})}
@@ -143,18 +204,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     # 运行中没有实例就没人能报出账号，也不该拿空账号去试密码
                     errors["new_password"] = "no_account"
                 else:
-                    ok, err_key = await app_sign_in(self.hass, account, new_password)
+                    ok, err_key, code_key = await app_sign_in(self.hass, account, new_password)
                     if ok:
-                        # App 登录已经把新会话写进设备 store；这里再把新摘要落进
-                        # state_grid.config，下一轮取数就用它
-                        dc.password = hashlib.md5(new_password.encode()).hexdigest().upper()
-                        try:
-                            await dc.save_data()
-                        except Exception:
-                            LOGGER.exception("[改密码] App 登录成功但保存 store 失败")
-                        LOGGER.warning("[改密码] 新密码经 App 通道验证通过，已写入 store")
-                    else:
-                        errors["new_password"] = err_key
+                        return await self._async_save_password(new_password, new_data)
+                    if code_key:
+                        self._pending = {"account": account, "password": new_password,
+                                         "code_key": code_key}
+                        self._pending_data = new_data
+                        return await self.async_step_device_verification()
+                    errors["new_password"] = err_key
 
             if not errors:
                 if new_data:
@@ -180,3 +238,47 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             ),
             errors=errors,
         )
+
+    async def async_step_device_verification(self, user_input=None):
+        """改密码时也可能会被要求一次短信验证，流程和添加时一样。"""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            code = str(user_input.get("verification_code", "")).strip()
+            if len(code) != 6 or not code.isdigit():
+                errors["base"] = "invalid_verification_code"
+            else:
+                ok, err_key, _ = await app_sign_in(
+                    self.hass, str(self._pending.get("account") or ""),
+                    str(self._pending.get("password") or ""),
+                    code=code, code_key=str(self._pending.get("code_key") or ""))
+                if ok:
+                    return await self._async_save_password(
+                        str(self._pending.get("password") or ""),
+                        getattr(self, "_pending_data", {}) or {})
+                self._pending = {}
+                errors["new_password"] = err_key or "app_login_failed"
+        return self.async_show_form(
+            step_id="device_verification",
+            data_schema=vol.Schema({
+                vol.Required("verification_code"): selector({"text": {"type": "text"}})
+            }),
+            errors=errors,
+            description_placeholders={"sms_hint": SMS_HINT},
+        )
+
+    async def _async_save_password(self, new_password: str, extra: dict[str, object]):
+        """新密码已被 App 通道接受：摘要落 store，把刷新间隔一起结掉。"""
+        self._pending = {}
+        dc = self.hass.data.get(DOMAIN)
+        # App 登录已经把新会话写进设备 store；这里再把新摘要落进
+        # state_grid.config，下一轮取数就用它
+        if dc is not None:
+            dc.password = hashlib.md5(new_password.encode()).hexdigest().upper()
+            try:
+                await dc.save_data()
+                LOGGER.warning("[改密码] 新密码经 App 通道验证通过，已写入 store")
+            except Exception:
+                LOGGER.exception("[改密码] App 登录成功但保存 store 失败")
+            if "refresh_interval" in extra:
+                dc.refresh_interval = extra["refresh_interval"]
+        return self.async_create_entry(title="", data=extra)
