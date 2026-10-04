@@ -424,6 +424,11 @@ class AppChannel:
                 elif "验证码" in text:
                     # 也要在密码那支前面：验证码错/失效说的是"再输一次"，不是"改密码"
                     self.last_error = "invalid_code"
+                elif code.startswith("RK"):
+                    # RK00x 一律是服务端风控判定。RK007 的原话是"网络连接超时(RK007),请重试"，
+                    # 但请求确实到了、信封也解得开——不能让它落到 unknown，否则用户会去查自己
+                    # 的网络、或者反复改密码（issue #9 就是被这句误导的）。
+                    self.last_error = "risk_control"
                 elif "密码" in text or "账号" in text or result_code in ("0100", "0101"):
                     self.last_error = "invalid_auth"
                 elif plain is None:

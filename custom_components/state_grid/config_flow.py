@@ -40,6 +40,7 @@ APP_ERROR_KEYS = {
     "rate_limited": "rk001_rate_limit",
     "cannot_connect": "cannot_connect",
     "new_device": "new_device_required",
+    "risk_control": "rk_risk_control",
     "unknown": "app_login_failed",
 }
 

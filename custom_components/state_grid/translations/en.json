@@ -28,7 +28,8 @@
       "rk001_rate_limit": "This identifier has used up its daily sign-in quota (RK001 rate limit). Try again after 00:00",
       "app_login_failed": "The App channel did not sign in. Check the [custom_components.state_grid] lines in the Home Assistant log - they carry the server code and message",
       "new_device_required": "State Grid wants a one-time \"new device\" check, but the SMS could not be sent. Go back one step and submit your password again; if this keeps happening this phone number is being blocked and the integration cannot finish that step",
-      "invalid_verification_code": "The code is wrong or has expired. Go back one step and resubmit your password so State Grid sends a new SMS"
+      "invalid_verification_code": "The code is wrong or has expired. Go back one step and resubmit your password so State Grid sends a new SMS",
+      "rk_risk_control": "State Grid returned a risk-control verdict (its wording is usually \"network timeout (RKxxx), please retry\", but the request did arrive and decrypted fine). This is not a wrong password and not your network: try again in a few hours or tomorrow, and don't keep resubmitting - that tends to extend the block. The exact code is in the [custom_components.state_grid] line of the HA log"
     },
     "abort": {
       "single_instance_allowed": "A State Grid instance already exists. Remove it before adding another"
@@ -60,7 +61,8 @@
       "app_login_failed": "The App channel could not verify this password. See the [custom_components.state_grid] lines in the log",
       "no_account": "No running integration instance found. Try again or restart Home Assistant",
       "new_device_required": "State Grid wants a one-time \"new device\" check, but the SMS could not be sent. Go back one step and submit your password again; if this keeps happening this phone number is being blocked and the integration cannot finish that step",
-      "invalid_verification_code": "The code is wrong or has expired. Go back one step and resubmit your password so State Grid sends a new SMS"
+      "invalid_verification_code": "The code is wrong or has expired. Go back one step and resubmit your password so State Grid sends a new SMS",
+      "rk_risk_control": "State Grid returned a risk-control verdict (its wording is usually \"network timeout (RKxxx), please retry\", but the request did arrive and decrypted fine). This is not a wrong password and not your network: try again in a few hours or tomorrow, and don't keep resubmitting - that tends to extend the block. The exact code is in the [custom_components.state_grid] line of the HA log"
     }
   }
 }
