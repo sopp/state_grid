@@ -19,16 +19,27 @@ sidecar 浏览器容器 ──webhook 推送────────────
 - 协调器每 5 分钟一轮，但**取数一天两次就够**：App 通道跟着「刷新间隔」走（默认 12 小时），国网一天内也只会多给出新的一天。每轮先让 App 通道灌一次缓存再决定是否强制刷新，所以刚取到的数据同一轮就被消费。
 - 网页那份数据（见下方「已知限制」）由另一个仓库 [state_grid_docker](https://github.com/tiejiang29/state_grid_docker) 的浏览器容器抓好后 POST 给本集成的 webhook。**本集成自己不再登网页**：站点升级后每个响应都用浏览器里的客户端公钥加密，离线客户端解不开。
 
-## 安装
+## 安装与升级
 
 ### HACS
 
 1. HACS → 集成 → 探索并添加自定义仓库：`https://github.com/tiejiang29/state_grid`，类别 **集成**
 2. 下载 → 重启 Home Assistant
 
+**升级**：HACS → 集成 → 国家电网 → 「重新下载」（有新版本时上面会显示当前版本与可用版本）→ **重启 Home Assistant**。
+
+两条会直接决定"HACS 里能不能升级"：
+
+- HACS 拿**最新一个已发布（Published）的 release** 当"可用版本"：草稿（Draft）不会被选上。发版时确认那个 tag 已经 Publish，而不是还躺在草稿里。
+- `manifest.json` 的 `version` 要和发布时的 tag 对上。HACS 用它显示"当前已装版本"，对不上就会出现"明明更新了却还显示旧版本"的错觉。
+
+不重启不生效：集成代码是启动时导入的，HACS 换完文件 HA 仍在跑内存里的旧版本；手动改过文件的还要连 `__pycache__` 一起清掉。
+
 ### 手动
 
-从 [Releases](https://github.com/tiejiang29/state_grid/releases) 下载，把 `custom_components/state_grid/` 整目录放到 HA 配置对应位置后重启。
+从 [Releases](https://github.com/tiejiang29/state_grid/releases) 下载，把 `custom_components/state_grid/` 整目录覆盖到 HA 配置对应位置，删除 `custom_components/state_grid/__pycache__`，重启 Home Assistant。升级就是同样三步（覆盖 → 清缓存 → 重启）。
+
+> 用 HACS 装的请不要直接改 `custom_components/state_grid/` 里的文件：「重新下载」是整份覆盖，本地改动会丢。
 
 ## 配置
 
