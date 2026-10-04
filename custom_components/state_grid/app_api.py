@@ -366,6 +366,12 @@ class AppChannel:
         async with self._lock:
             if not force and await self.async_load_session():
                 return True
+            # force=True 时上面那条短路不进 `async_load_session`，而它是唯一的
+            # "读回/首建设备画像"入口。少这一步，`self.device.identity` 就在新装的第一次
+            # 配置时抛 RuntimeError("设备画像未初始化")——HA 界面只显示 Unknown error occurred
+            # （issue #9/#10/#11 全是这一条），选项里改密码走同一个函数，所以也会崩。
+            await self.device.async_prepare(self.hass)
+            await self.device.async_load()
             model, release = self.device.identity
             token, token_time = await self.device.async_device_token()
             params = _login_payload(self.account, self.password_md5, model, release)
@@ -381,9 +387,13 @@ class AppChannel:
                 result_code = str(srv.get("resultCode") or "")
                 text = str(srv.get("resultMessage") or (plain or {}).get("message") or "")
                 # 配置向导要把"密码错了"和"连不上/被限流"分开报，光一个 False 会把用户
-                # 引去改密码，而真正的原因可能是流控
+                # 引去改密码，而真正的原因可能是流控。
+                # 4006（新设备安全验证）必须排在密码那支前面：它的原话里有"为了您的账号安全"，
+                # 按"含账号就当成密码错"判会把一条走不通的路说成"再试一次密码"。
                 if code in RATE_LIMIT_CODES or "RK001" in text or "日额度" in text:
                     self.last_error = "rate_limited"
+                elif result_code == "4006" or "新设备" in text:
+                    self.last_error = "new_device"
                 elif "密码" in text or "账号" in text or result_code in ("0100", "0101"):
                     self.last_error = "invalid_auth"
                 elif plain is None:

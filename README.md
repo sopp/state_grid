@@ -9,15 +9,13 @@
 ## 它是怎么工作的
 
 ```
-App 通道（app_api.py）  ──按刷新间隔（默认 12 小时）──┐
-                                                     ├─▶ 推送缓存 ─▶ refresh_data 解析 ─▶ 实体
-sidecar 浏览器容器 ──webhook 推送──────────────────┘   （原版解析逻辑，一行语义没改）
+App 通道（app_api.py） ──按刷新间隔（默认 12 小时）──▶ 推送缓存 ─▶ refresh_data 解析 ─▶ 实体
 ```
 
 - App 通道用 SM4/SM2/SM3 信封直连国网 App 网关，设备令牌 `deviceTokenTX` 在本地生成（`turing/`，MIT vendored）——**不经过任何第三方打码或加密代理服务**。
 - 会话令牌有效期 15 天，存在 HA 的 `.storage` 里，到期自动重新登录。
 - 协调器每 5 分钟一轮，但**取数一天两次就够**：App 通道跟着「刷新间隔」走（默认 12 小时），国网一天内也只会多给出新的一天。每轮先让 App 通道灌一次缓存再决定是否强制刷新，所以刚取到的数据同一轮就被消费。
-- 网页那份数据（见下方「已知限制」）由另一个仓库 [state_grid_docker](https://github.com/tiejiang29/state_grid_docker) 的浏览器容器抓好后 POST 给本集成的 webhook。**本集成自己不再登网页**：站点升级后每个响应都用浏览器里的客户端公钥加密，离线客户端解不开。
+- **集成不发任何网页请求**：站点升级后网页每个响应都用浏览器里的客户端公钥加密，离线客户端既解不开也没法重放，所以网页那半边不再维护，只剩「上个月抄表」这一格受影响（见下方「已知限制」）。
 
 ## 安装与升级
 
@@ -71,7 +69,7 @@ sidecar 浏览器容器 ──webhook 推送────────────
 - **「上个月抄表」恒为 0。** 95598 站点升级后，网页那条抄表接口返回的载荷里已经没有解析器等的 `readList/billRead` 那组键；App 侧也没有对应端点（月度接口只给档位 `levelStdCode/firstRefPq/secondRefPq` 和结算区间，不给示数）。这一格从站点升级起就是 0，与本项目走哪条通道无关。
 - **年度分时之和比年度累计电量少约 0.3%**（实测 4.2 kWh / 1647.3 kWh）。日电量的发布口径与月结算电量本身不重合，不是窗口算错。
 - **App 会话是单份的**：同一账号在别处重新登录会顶掉 HA 里这份（服务端回 `-201 登录状态已失效`）。生产侧下一轮会自动重新登录，但调试时请记着这点。
-- **令牌 15 天到期后的重登是否需要"新设备短信验证"尚未验证**——这是无人值守运行目前唯一没被证实的环节。
+- **"新设备安全验证"（服务端 `resultCode=4006`）无法在 HA 里完成**：这条路线的设备身份是本地合成的（`turing/` 画像 + 现造的 `deviceTokenTX`），服务端第一次见到就可能要短信验证。本集成不做短信、不做扫码，碰上时配置页会直接这么告诉你（不再和"密码错了"混成一句）。自己的账号从 10-03 起没被要求过，所以这是**按账号/按风控**的，不是必然。要避开的只有"换设备画像"这一件事：`.storage/state_grid.app_device` 存的是画像种子，删掉它等于换一台新设备。
 - **RK001 是按登录标识计的日额度**（错误码 11401），换 IP、换客户端都没用；被限流时当天不会再成功。
 
 ## 日志里能看到什么
@@ -82,7 +80,7 @@ sidecar 浏览器容器 ──webhook 推送────────────
 
 - [bilezhou/state_grid](https://github.com/bilezhou/state_grid) — 取数与解析逻辑来源（MIT，署名见 `custom_components/state_grid/LICENSE.hass-state-grid`）
 - [renxiaoyaoo/ha-95598](https://github.com/renxiaoyaoo/ha-95598) 与 [ARC-MX/sgcc_electricity_new](https://github.com/ARC-MX/sgcc_electricity_new) — 接口与验证码链路的逆向参考
-- [state_grid_docker](https://github.com/tiejiang29/state_grid_docker) — 同作者的浏览器兜底容器（网页那份数据从这里进）
+- [state_grid_docker](https://github.com/tiejiang29/state_grid_docker) — 同作者的另一个仓库，本集成不依赖它
 
 ## 免责声明
 

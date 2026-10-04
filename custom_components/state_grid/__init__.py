@@ -41,10 +41,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_setup_push_webhook(hass: HomeAssistant, entry: ConfigEntry,
                                     data_client: StateGridDataClient) -> None:
-    """注册 sidecar 推送入口：/api/webhook/<id>。
+    """注册网页那侧数据的推送入口：/api/webhook/<id>。
 
     id 是随机 128 位，首次 setup 生成后写进 entry.data 持久化，用户不用在任何界面里填。
-    只允许内网推送（sidecar 和 HA 在同一台 NAS 局域网上），外网访问直接拒。
+    只允许内网推送（推送方和 HA 在同一台 NAS 局域网上），外网访问直接拒。
+    没有推送过来时这条路完全不参与供数，正常安装的人不需要知道它的存在。
     """
     webhook_id = (entry.data or {}).get(CONF_PUSH_WEBHOOK)
     if not webhook_id:
@@ -66,7 +67,7 @@ async def _async_setup_push_webhook(hass: HomeAssistant, entry: ConfigEntry,
         except Exception:
             return web.json_response({"ok": False, "error": "body 不是 JSON"}, status=400)
         count = await data_client.ingest_push(bundle)
-        # 先回响应再刷新：解析 800 行数据要几秒，别让 sidecar 干等一个可能超时的大请求
+        # 先回响应再刷新：解析 800 行数据要几秒，别让推送方干等一个可能超时的大请求
         coordinator = data_client.coordinator
         if coordinator is not None:
             hass.async_create_task(coordinator.async_refresh())
@@ -74,7 +75,7 @@ async def _async_setup_push_webhook(hass: HomeAssistant, entry: ConfigEntry,
             LOGGER.warning("收到推送但 coordinator 还没就绪，数据留在缓存里等下一次轮询")
         return web.json_response({"ok": True, "stored": count, "meta": data_client.push_meta})
 
-    webhook_register(hass, DOMAIN, "state_grid sidecar push", webhook_id, handle_push, local_only=True)
+    webhook_register(hass, DOMAIN, "state_grid 网页兜底推送", webhook_id, handle_push, local_only=True)
     entry.async_on_unload(lambda: webhook_unregister(hass, webhook_id))
 
 

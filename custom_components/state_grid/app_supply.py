@@ -193,8 +193,8 @@ async def async_fill_cache(hass, client) -> int:
     daily_items = [i for i in items if i["shape"] == "daily_ele"]
     if not main_ok:
         # 只剩 meter_list 也没法算电量，且 ingest_push 是整包替换，
-        # 这时候灌进去反而会把 sidecar 那份好数据顶掉，所以直接不供应。
-        LOGGER.warning("App 通道没取到日电量，本轮不灌缓存（保留 sidecar/网页路径）")
+        # 这时候灌进去反而会把网页兜底那一份好数据顶掉，所以直接不供应。
+        LOGGER.warning("App 通道没取到日电量，本轮不灌缓存（保留网页兜底推送那一份）")
         return 0
     count = await client.ingest_push({
         "source": "App 通道推送",

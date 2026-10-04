@@ -1,8 +1,7 @@
 """国家电网集成的配置向导：只走 App 通道。
 
 网页那条登录链（验证码、邮箱降级、会话密钥）已经整段删掉——95598 升级后每个响应都用
-浏览器里的客户端公钥加密，离线客户端解不开，所以网页那份数据只能由真实浏览器抓
-（仓库 state_grid_docker 的 sidecar 容器），本集成不再自己登网页。
+浏览器里的客户端公钥加密，离线客户端解不开。本集成因此不发任何网页请求。
 """
 import hashlib
 
@@ -17,10 +16,10 @@ from .data_client import StateGridDataClient
 from .utils.logger import LOGGER
 
 USER_HINT = (
-    "登录与取数都走国家电网 App 的接口：没有验证码，也不需要大模型。"
+    "登录与取数都走国家电网 App 的接口：没有验证码，也不需要大模型或浏览器。"
     "配好之后按刷新间隔取数，默认 12 小时一次（一天两次）。\n\n"
-    "网页那份数据（目前只剩抄表读数一格，而它从站点升级起本身就回空值）要的话"
-    "另装 sidecar 浏览器容器：仓库 state_grid_docker，它抓完 POST 给本集成的 webhook。"
+    "只有「上个月抄表」这一格取不到：站点升级后网页那侧的载荷里就没有解析器等的那组键，"
+    "App 侧也没有对应端点，其余实体都来自 App 接口。"
 )
 
 # App 登录失败的原因 → 配置页的错误键。"密码错了"和"今天被限流"要让用户做的事完全不同，
@@ -29,6 +28,7 @@ APP_ERROR_KEYS = {
     "invalid_auth": "invalid_auth",
     "rate_limited": "rk001_rate_limit",
     "cannot_connect": "cannot_connect",
+    "new_device": "new_device_required",
     "unknown": "app_login_failed",
 }
 

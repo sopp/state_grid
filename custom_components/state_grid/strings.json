@@ -19,6 +19,7 @@
       "invalid_phone": "请输入有效的手机号码",
       "cannot_connect": "无法连接到国家电网服务器",
       "rk001_rate_limit": "该标识今天的登录额度已用完（RK001 流控），请明日 0 点后重试",
+      "new_device_required": "服务端要求先做一次\"新设备安全验证\"（原话：您正在使用一台新设备登录网上国网）。本集成不做短信/扫码验证，这一步没法在 Home Assistant 里完成；HA 日志 [custom_components.state_grid] 里有服务端的 code 和原话",
       "app_login_failed": "App 通道登录没完成，请把 HA 日志里 [custom_components.state_grid] 那几行看一下（里面有服务端返回的 code 和原话）"
     },
     "abort": {
@@ -42,7 +43,8 @@
       "cannot_connect": "无法连接到国家电网服务器",
       "rk001_rate_limit": "该标识今天的登录额度已用完（RK001 流控），请明日 0 点后重试",
       "app_login_failed": "App 通道没能验证这个密码，详情看 HA 日志里 [custom_components.state_grid] 的行",
-      "no_account": "未找到运行中的集成实例，请重试或重启 Home Assistant"
+      "no_account": "未找到运行中的集成实例，请重试或重启 Home Assistant",
+      "new_device_required": "服务端要求先做一次\"新设备安全验证\"（原话：您正在使用一台新设备登录网上国网）。本集成不做短信/扫码验证，这一步没法在 Home Assistant 里完成；HA 日志 [custom_components.state_grid] 里有服务端的 code 和原话"
     }
   }
 }
