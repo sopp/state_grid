@@ -18,7 +18,7 @@ from .utils.logger import LOGGER
 
 USER_HINT = (
     "登录与取数都走国家电网 App 的接口：没有验证码，也不需要大模型。"
-    "配好之后每小时供数一次。\n\n"
+    "配好之后按刷新间隔取数，默认 12 小时一次（一天两次）。\n\n"
     "网页那份数据（目前只剩抄表读数一格，而它从站点升级起本身就回空值）要的话"
     "另装 sidecar 浏览器容器：仓库 state_grid_docker，它抓完 POST 给本集成的 webhook。"
 )
@@ -72,7 +72,7 @@ class StateGridConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ok, err_key = await app_sign_in(self.hass, phone, password)
                 if ok:
                     dc = StateGridDataClient(hass=self.hass, config=None)
-                    # 凭证只落 store：App 通道每小时取数读的就是这两项。网页那套会话字段
+                    # 凭证只落 store：App 通道每轮取数读的就是这两项。网页那套会话字段
                     # （keyCode/accessToken/userInfo…）已经没有生产者，不再往 store 里写
                     dc.account = phone
                     dc.password = hashlib.md5(password.encode()).hexdigest().upper()
@@ -81,7 +81,7 @@ class StateGridConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     except Exception:
                         LOGGER.exception("保存 state_grid.config 失败，但登录已成功。")
                     self.hass.data[DOMAIN] = dc
-                    LOGGER.warning("[配置] App 通道登录成功，接下来每小时供数一次")
+                    LOGGER.warning("[配置] App 通道登录成功，接下来按刷新间隔供数")
                     return self.async_create_entry(title=f"国家电网 - {phone}", data={})
                 errors["base"] = err_key
 

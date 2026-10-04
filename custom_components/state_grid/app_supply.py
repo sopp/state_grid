@@ -18,8 +18,7 @@ from .utils.logger import LOGGER
 
 DAILY_LAG_DAYS = 1          # 网页主请求问的是"昨天"为止的近 40 天，不是今天
 DAILY_DAYS = 40             # 与 __get_door_daily_bill 的 timedelta(days=40) 对齐
-FILL_MIN_INTERVAL_S = 3600   # 协调器每 5 分钟一轮，App 取数没必要跟着跑
-MONTH_BACKFILL_PER_FILL = 6  # 按月回补一次最多补几个月，别在一轮里把 APP 打爆
+MONTH_BACKFILL_PER_FILL = 12  # 按月回补一次最多补几个月，别在一轮里把 APP 打爆
 _last_fill = 0.0
 _DAILY_VALUE_KEYS = ("dayElePq", "thisPPq", "thisVPq", "thisNPq", "thisTPq")
 
@@ -120,7 +119,11 @@ async def async_fill_cache(hass, client) -> int:
     返回入库份数；0 表示这轮不供应（保持原路径）。
     """
     global _last_fill
-    if time.time() - _last_fill < FILL_MIN_INTERVAL_S:
+    # 供数节奏跟着 refresh_interval（选项里的刷新间隔，下限 12 小时）走：那正是
+    # refresh_data 消费这批缓存的闸门。灌得比它勤只是把同一份日/月度重复取一遍——
+    # 国网一天最多给出新的一天，所以一天两次就够。
+    interval_s = max(int(getattr(client, "refresh_interval", 12) or 12), 12) * 3600
+    if time.time() - _last_fill < interval_s:
         return 0
     _last_fill = time.time()
     account = str(getattr(client, "account", "") or "")
@@ -172,7 +175,7 @@ async def async_fill_cache(hass, client) -> int:
                               "period": str(today.year - 1),
                               "response": _monthly_response(dlast, today.year - 1)})
         # 按月回补：网页对每个还没有 daily_ele 的月行都会用同一个 c24/f01 再问一次整月窗口。
-        # 补成功的月行会写上 daily_ele，之后不再问，所以这笔开销是有界的、只在未来头几轮。
+        # 补成功的月行会写上 daily_ele，之后不再问，所以这笔开销是有界的、只在刚装好的头一两天。
         for ym in sorted({r["month"] for r in rows_all
                           if r.get("month") and not r.get("daily_ele")},
                          reverse=True)[:MONTH_BACKFILL_PER_FILL]:

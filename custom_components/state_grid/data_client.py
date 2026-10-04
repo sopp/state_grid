@@ -2,7 +2,7 @@
 国家电网数据客户端。
 
 数据只从"推送缓存"来，本模块不再发任何网络请求：
-  * state_grid 自己的 App 通道（app_supply 每小时把 App 接口面的返回翻译成网页形状灌进来）；
+  * state_grid 自己的 App 通道（app_supply 按刷新间隔把 App 接口面的返回翻译成网页形状灌进来）；
   * sidecar 浏览器容器 POST 给本集成 webhook 的那份真实网页响应（仓库 state_grid_docker）。
 
 为什么不留网页 HTTP：95598 在 2026-09 把会话密钥挪进了页面——服务端用客户端公钥加密每一个
