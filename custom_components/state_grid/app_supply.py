@@ -197,8 +197,9 @@ async def async_fill_cache(hass, client) -> int:
         LOGGER.warning("App 通道没取到日电量，本轮不灌缓存（保留 sidecar/网页路径）")
         return 0
     count = await client.ingest_push({
+        "source": "App 通道推送",
         "items": items,
         "pushed_at": datetime.now(CHINA).isoformat(timespec="seconds")})
-    LOGGER.warning("App 通道入仓 %d 份（日电量 %d 份，主窗口 %d 块表）",
-                   count, len(daily_items), main_ok)
+    LOGGER.warning("App 通道本轮取到 %d 份载荷（日电量 %d 份，主窗口 %d 块表）",
+                   len(items), len(daily_items), main_ok)
     return count

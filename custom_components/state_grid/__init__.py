@@ -60,6 +60,10 @@ async def _async_setup_push_webhook(hass: HomeAssistant, entry: ConfigEntry,
             bundle = await request.json()
         except Exception:
             return web.json_response({"ok": False, "error": "body 不是 JSON"}, status=400)
+        # 这一句只在真收到 HTTP 推送时才会出现，是"sidecar 到底有没有在供数"的唯一正证；
+        # 供数本身另有 ingest_push 那行带来源的日志，两边对得上才算真有人在推
+        LOGGER.warning("收到 webhook 推送：来自 %s，载荷 %d 项",
+                       request.remote, len((bundle or {}).get("items") or []))
         count = await data_client.ingest_push(bundle)
         # 先回响应再刷新：解析 800 行数据要几秒，别让 sidecar 干等一个可能超时的大请求
         coordinator = data_client.coordinator

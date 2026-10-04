@@ -309,10 +309,10 @@ class StateGridDataClient:
                 await async_save_to_store(B.hass,'state_grid.config',A)
 
         # ────────────────────────────────────────────
-        # ingest_push: 接收 sidecar 浏览器抓取的一次登录成果
+        # ingest_push: 供数总入口（sidecar 推送和 App 通道都走这里）
         # ────────────────────────────────────────────
         async def ingest_push(A,bundle):
-                """把 sidecar 推来的 {items:[{shape,consNo,response}]} 装进一次性缓存。
+                """把 {items:[{shape,consNo,response}]} 装进一次性缓存。
 
                 每次推送整包替换：跨代残留会被下一轮误当成新数据消费。
                 同一个 (接口, 户号) 允许挂多份载荷：网页在同一个接口上是**按年/按月问很多次**的
@@ -348,7 +348,11 @@ class StateGridDataClient:
                 # 数据的"新鲜时间"就是推送时间：timestamp 不跟着走的话 12 小时闸门一直是开的，
                 # 每 5 分钟的轮询都会重新走一遍解析（虽然不再发网络请求，也是白跑）
                 A.timestamp=int(time.time()*1000)
-                LOGGER.warning('sidecar 推送入仓 %d 份（%d 个键，跳过 %d）',n,len(cache),len(skipped))
+                # 供数来源必须写进行情：App 通道和 sidecar 走的是同一个入口，
+                # 上一版把这句固定写成 "sidecar 推送入仓"，结果 App 每轮灌数都在日志里
+                # 冒充 sidecar，看不出来到底是谁在供数
+                LOGGER.warning('%s 入仓 %d 份（%d 个键，跳过 %d）',
+                               (bundle or {}).get('source') or 'sidecar 推送',n,len(cache),len(skipped))
                 return n
         def handle_request_result_message(E,api,result,printResult=_V):
                 D='message';C='resultMessage';A=result
