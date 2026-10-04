@@ -352,7 +352,7 @@ class StateGridDataClient:
                 # 上一版把这句固定写成 "sidecar 推送入仓"，结果 App 每轮灌数都在日志里
                 # 冒充 sidecar，看不出来到底是谁在供数
                 LOGGER.warning('%s 入仓 %d 份（%d 个键，跳过 %d）',
-                               (bundle or {}).get('source') or 'sidecar 推送',n,len(cache),len(skipped))
+                               (bundle or {}).get('source') or '未标注来源的推送',n,len(cache),len(skipped))
                 return n
         def handle_request_result_message(E,api,result,printResult=_V):
                 D='message';C='resultMessage';A=result
