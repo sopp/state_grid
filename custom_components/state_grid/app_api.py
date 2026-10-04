@@ -29,7 +29,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
 from .utils.crypt import (AA, BB, SM4_DECRYPT, SM4_ENCRYPT, m_hash, m_kdf)
-from .const import RATE_LIMIT_CODES
+from .const import CAPTCHA_CODES, RATE_LIMIT_CODES
 from .utils.logger import LOGGER
 
 APP_BASE_URL = "https://csc-service.sgcc.com.cn:28630"
@@ -424,11 +424,11 @@ class AppChannel:
                 elif "验证码" in text:
                     # 也要在密码那支前面：验证码错/失效说的是"再输一次"，不是"改密码"
                     self.last_error = "invalid_code"
-                elif code.startswith("RK"):
-                    # RK00x 一律是服务端风控判定。RK007 的原话是"网络连接超时(RK007),请重试"，
-                    # 但请求确实到了、信封也解得开——不能让它落到 unknown，否则用户会去查自己
-                    # 的网络、或者反复改密码（issue #9 就是被这句误导的）。
-                    self.last_error = "risk_control"
+                elif code in CAPTCHA_CODES:
+                    # 服务端在这一步要一次腾讯验证（滑块/点选）。它的原话是"网络连接超时,请重试"，
+                    # 那句是站点对这类码的统一兜底文案，不是网络故障：请求到了、信封也解得开。
+                    # 归类成"要验证码"而不是"稍后再试"，因为重试不会让它变成不要。
+                    self.last_error = "captcha_required"
                 elif "密码" in text or "账号" in text or result_code in ("0100", "0101"):
                     self.last_error = "invalid_auth"
                 elif plain is None:

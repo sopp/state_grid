@@ -29,7 +29,7 @@
       "app_login_failed": "The App channel did not sign in. Check the [custom_components.state_grid] lines in the Home Assistant log - they carry the server code and message",
       "new_device_required": "State Grid wants a one-time \"new device\" check, but the SMS could not be sent. Go back one step and submit your password again; if this keeps happening this phone number is being blocked and the integration cannot finish that step",
       "invalid_verification_code": "The code is wrong or has expired. Go back one step and resubmit your password so State Grid sends a new SMS",
-      "rk_risk_control": "State Grid returned a risk-control verdict (its wording is usually \"network timeout (RKxxx), please retry\", but the request did arrive and decrypted fine). This is not a wrong password and not your network: try again in a few hours or tomorrow, and don't keep resubmitting - that tends to extend the block. The exact code is in the [custom_components.state_grid] line of the HA log"
+      "captcha_required": "State Grid asked for a security check at this step (a slider or click captcha; the type code is RKxxx). That check has to be completed by Tencent's web widget, which the App interface cannot do here, so retrying won't make it go away. This is not a wrong password and not your network - the \"network timeout\" wording is the site's generic text for these codes"
     },
     "abort": {
       "single_instance_allowed": "A State Grid instance already exists. Remove it before adding another"
@@ -62,7 +62,7 @@
       "no_account": "No running integration instance found. Try again or restart Home Assistant",
       "new_device_required": "State Grid wants a one-time \"new device\" check, but the SMS could not be sent. Go back one step and submit your password again; if this keeps happening this phone number is being blocked and the integration cannot finish that step",
       "invalid_verification_code": "The code is wrong or has expired. Go back one step and resubmit your password so State Grid sends a new SMS",
-      "rk_risk_control": "State Grid returned a risk-control verdict (its wording is usually \"network timeout (RKxxx), please retry\", but the request did arrive and decrypted fine). This is not a wrong password and not your network: try again in a few hours or tomorrow, and don't keep resubmitting - that tends to extend the block. The exact code is in the [custom_components.state_grid] line of the HA log"
+      "captcha_required": "State Grid asked for a security check at this step (a slider or click captcha; the type code is RKxxx). That check has to be completed by Tencent's web widget, which the App interface cannot do here, so retrying won't make it go away. This is not a wrong password and not your network - the \"network timeout\" wording is the site's generic text for these codes"
     }
   }
 }
