@@ -29,7 +29,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
 from .utils.crypt import (AA, BB, SM4_DECRYPT, SM4_ENCRYPT, m_hash, m_kdf)
-from .const import CAPTCHA_CODES, RATE_LIMIT_CODES
+from .const import CAPTCHA_CODES, RATE_LIMIT_CODES, SESSION_DEAD_CODES
 from .utils.logger import LOGGER
 
 APP_BASE_URL = "https://csc-service.sgcc.com.cn:28630"
@@ -376,7 +376,16 @@ class AppChannel:
                          if isinstance(v, dict)]
         # 原始行也要恢复：灌推送缓存时喂给网页解析器的是原样字段，不是 AppAccount
         self.raw_accounts = [v for v in (s.get("accounts") or []) if isinstance(v, dict)]
-        return bool(self.token) and int(s.get("expires_at") or 0) > time.time() + TOKEN_LIFE_SAFETY_S
+        if not self.token:
+            return False
+        left = int(s.get("expires_at") or 0) - time.time()
+        if left > TOKEN_LIFE_SAFETY_S:
+            return True
+        # 到这一步就是"提前一天主动重登"那次（约装好后第 14 天）。它是整条路线上唯一
+        # 没被验证过的动作，日志单独说一句，好对着时间看服务端这次要不要人工验证。
+        LOGGER.warning("App 会话只剩 %.2f 天（不足 %d 天就重登），本轮重新登录一次",
+                       max(left, 0) / 86400.0, TOKEN_LIFE_SAFETY_S // 86400)
+        return False
 
     async def async_save_session(self) -> None:
         self.device.doc["session"] = {"token": self.token, "user_id": self.user_id,
@@ -521,11 +530,49 @@ class AppChannel:
             LOGGER.warning("App 通道 %s 响应解不开：%s %s", path, type(exc).__name__, str(exc)[:80])
             return None
 
-    async def _authed(self, path: str, payload: Any):
+    @staticmethod
+    def _session_rejected(plain: Any) -> bool:
+        """服务端回的是"这份会话不算数了"吗？"""
+        if not isinstance(plain, dict):
+            return False
+        code = str(plain.get("code") or "")
+        srv = ((plain.get("data") or {}).get("srvrt") or {})
+        text = str(srv.get("resultMessage") or plain.get("message") or "")
+        return code in SESSION_DEAD_CODES or "登录状态已失效" in text
+
+    async def _async_relogin_and_retry(self, path: str, payload: Any):
+        """会话被服务端**提前**作废时的自救：清掉本地那份、重登一次、重试原请求。
+
+        为什么必须自己清：`async_load_session` 只能看本地存的 expires_at，而它在
+        上游那边第 3 天就作废过（hass-state-grid issue #2）。不清的话每轮都带着死令牌
+        去碰、每轮都"没取到日电量"，要僵到 expires_at 前一天才会重登。
+        重登撞上人工验证就**停手**：上游那个用户就是被"失败即重登"反复敲进 RK008 的。
+        """
+        self.device.doc.pop("session", None)
+        await self.device.async_save()
+        self.token = self.user_id = self.province = ""
+        self.accounts = []
+        self.raw_accounts = []
+        if not await self.async_login(force=True):
+            if self.last_error in ("new_device", "captcha_required"):
+                LOGGER.warning("会话被服务端作废，但重新登录要求人工验证（%s）——本轮放弃，"
+                               "别反复重试，越试越容易被延长拦截", self.last_error)
+            return None
+        LOGGER.warning("会话被提前作废：已重新登录，继续本轮取数")
         model, release = self.device.identity
         token, token_time = await self.device.async_device_token()
         return await self._post(path, payload, token=token, token_time=token_time,
                                 model=model, release=release, session_token=self.token)
+
+    async def _authed(self, path: str, payload: Any):
+        model, release = self.device.identity
+        token, token_time = await self.device.async_device_token()
+        plain = await self._post(path, payload, token=token, token_time=token_time,
+                                 model=model, release=release, session_token=self.token)
+        if self._session_rejected(plain):
+            retried = await self._async_relogin_and_retry(path, payload)
+            return retried if retried is not None else plain
+        return plain
 
     async def async_daily(self, a: AppAccount, start: date, end: date) -> dict[str, Any] | None:
         return await self._authed(DAILY_PATH, _daily_payload(a, start, end))
