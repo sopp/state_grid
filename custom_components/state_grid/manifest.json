@@ -4,6 +4,7 @@
   "version": "0.9.5",
   "homeassistant": "2024.6.0",
   "documentation": "https://github.com/tiejiang29/state_grid",
+  "issue_tracker": "https://github.com/sopp/state_grid/issues",
   "requirements": [],
   "codeowners": ["tiejiang29"],
   "config_flow": true,

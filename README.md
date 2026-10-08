@@ -25,16 +25,19 @@ App 通道（app_api.py） ──按刷新间隔（默认 12 小时）──▶ 
 
 ### HACS
 
-1. HACS → 集成 → 探索并添加自定义仓库：`https://github.com/tiejiang29/state_grid`，类别 **集成**
+1. HACS → 集成 → 探索并添加自定义仓库：`https://github.com/sopp/state_grid`，类别 **集成**
 2. 下载 → 重启 Home Assistant
 
 **升级**：HACS → 集成 → 国家电网 → 「重新下载」（有新版本时上面会显示当前版本与可用版本）→ **重启 Home Assistant**。
+
+> **从上游版本迁移过来**：先在 HACS 里删掉 `tiejiang29/state_grid` 这条自定义仓库，再按上面两步添加本仓库。两个仓库提供同一个 `state_grid` 域，都留着会互相覆盖。
+> 能源统计的游标存在 HA 的 `.storage/state_grid.energy_cursor`（不在集成目录里），所以换安装方式、被「重新下载」整份覆盖都不会丢已导入的历史，不需要重建。
 
 
 
 ### 手动
 
-从 [Releases](https://github.com/tiejiang29/state_grid/releases) 下载，把 `custom_components/state_grid/` 整目录覆盖到 HA 配置对应位置，删除 `custom_components/state_grid/__pycache__`，重启 Home Assistant。升级就是同样三步（覆盖 → 清缓存 → 重启）。
+从本仓库下载 zip（或直接 clone），把 `custom_components/state_grid/` 整目录覆盖到 HA 配置对应位置，删除 `custom_components/state_grid/__pycache__`，重启 Home Assistant。升级就是同样三步（覆盖 → 清缓存 → 重启）。
 
 > 用 HACS 装的请不要直接改 `custom_components/state_grid/` 里的文件：「重新下载」是整份覆盖，本地改动会丢。
 
